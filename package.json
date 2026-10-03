@@ -18,5 +18,24 @@
     "skills/orca-review-loop",
     "examples/orca-loop.config.json",
     "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Kavender/orca-review-loop.git"
+  },
+  "homepage": "https://github.com/Kavender/orca-review-loop",
+  "bugs": {
+    "url": "https://github.com/Kavender/orca-review-loop/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "orca",
+    "codex",
+    "claude",
+    "code-review",
+    "agent",
+    "orchestration"
   ]
 }
