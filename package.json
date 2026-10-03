@@ -1,0 +1,22 @@
+{
+  "name": "orca-review-loop",
+  "version": "0.1.0",
+  "description": "Deterministic Claude implementation and Codex review/fix loop for Orca",
+  "type": "module",
+  "bin": {
+    "orca-review-loop": "skills/orca-review-loop/scripts/orca-review-loop.mjs"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "validate:skill": "python3 ${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-creator/scripts/quick_validate.py skills/orca-review-loop"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "Apache-2.0",
+  "files": [
+    "skills/orca-review-loop",
+    "examples/orca-loop.config.json",
+    "README.md"
+  ]
+}

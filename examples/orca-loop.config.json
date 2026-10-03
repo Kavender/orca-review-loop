@@ -1,0 +1,14 @@
+{
+  "maxRounds": 5,
+  "worktree": "current",
+  "implement": { "agent": "claude", "model": null, "effort": null },
+  "review": { "agent": "codex", "model": null, "effort": null },
+  "ackTimeoutMs": 60000,
+  "waitTimeoutMs": 900000,
+  "maxTotalMinutes": 360,
+  "maxLaunchRetries": 1,
+  "maxEmptyWaitsBeforeInspect": 3,
+  "dirtyWorktreePolicy": "refuse",
+  "retainTerminals": false,
+  "logBodies": false
+}

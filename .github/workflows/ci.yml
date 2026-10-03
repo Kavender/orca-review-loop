@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Controller tests
+        run: npm test
+      - name: Skill structure
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          text = Path("skills/orca-review-loop/SKILL.md").read_text()
+          assert re.match(r"^---\nname: orca-review-loop\ndescription: .+\n---\n", text)
+          assert "TODO" not in text
+          PY
