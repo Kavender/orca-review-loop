@@ -323,17 +323,27 @@ export function resolveArtifact(path, root = ROOT) {
   if (!path) return null;
   const absolute = resolve(root, path);
   const realRoot = realpathSync(root);
-  const realAbsolute = realizePath(absolute);
+  let realAbsolute;
+  try {
+    realAbsolute = realizePath(absolute);
+  } catch (error) {
+    throw new LoopError("PROTOCOL_ERROR", `artifact path is not usable: ${error.code ?? error.message}`);
+  }
   const relative = relativePath(realRoot, realAbsolute);
   if (!relative || relative === ".." || relative.startsWith(`..${sep}`) || isAbsolute(relative)) {
     throw new LoopError("PROTOCOL_ERROR", "artifact must be inside the target worktree");
   }
-  if (existsSync(absolute) || lstatSync(absolute, { throwIfNoEntry: false })) {
-    const info = lstatSync(absolute, { throwIfNoEntry: false });
-    if (info?.isSymbolicLink()) throw new LoopError("PROTOCOL_ERROR", "artifact must not be a symbolic link");
-    if (info && !info.isFile()) throw new LoopError("PROTOCOL_ERROR", "artifact must be a regular file");
+  let info;
+  try {
+    info = lstatSync(absolute, { throwIfNoEntry: false });
+  } catch (error) {
+    // e.g. ENOTDIR when a parent path component is a regular file.
+    throw new LoopError("PROTOCOL_ERROR", `artifact path is not usable: ${error.code ?? error.message}`);
   }
-  return { relative: relativePath(root, absolute), absolute, existsAtStart: existsSync(absolute) };
+  if (info?.isSymbolicLink()) throw new LoopError("PROTOCOL_ERROR", "artifact must not be a symbolic link");
+  if (info && !info.isFile()) throw new LoopError("PROTOCOL_ERROR", "artifact must be a regular file");
+  // Report and operate on the canonical in-root path so symlinked roots (e.g. /var -> /private/var) display cleanly.
+  return { relative, absolute: join(realRoot, relative), existsAtStart: Boolean(info) };
 }
 
 // Artifact state is hashed independently of git so an ignored spec file is still observed.
@@ -356,7 +366,10 @@ function worktreeSelector(configured) {
 }
 
 function worktreePathOf(receipt) {
-  const id = findValue(receipt, ["resolvedWorktreeId", "worktreeId", "worktree_id"]);
+  // Prefer the fields that describe this dispatch's placement; deep search is only a fallback.
+  const explicit = [receipt?.resolvedWorktreeId, receipt?.worktreeId, receipt?.dispatch?.worktreeId,
+    receipt?.placement?.worktreeId, receipt?.worktree?.id].find((v) => typeof v === "string");
+  const id = explicit ?? findValue(receipt, ["resolvedWorktreeId", "worktreeId", "worktree_id"]);
   if (typeof id !== "string") return null;
   const index = id.indexOf("::");
   return index >= 0 ? id.slice(index + 2) : null;
@@ -465,6 +478,14 @@ class Controller {
       throw new LoopError("ORCA_ERROR", "worker-start omitted lifecycle IDs", { receipt });
     }
     if (!this.rootTaskId) this.rootTaskId = worker.taskId;
+    if (response.status !== 0) {
+      const inputAccepted = findValue(receipt, ["inputAccepted", "input_accepted"]);
+      throw new LoopError("WORKER_FAILED", "worker-start failed", {
+        receipt,
+        worker,
+        retryableNoStart: inputAccepted === false,
+      });
+    }
     const placedAt = worktreePathOf(receipt);
     if (placedAt && !samePath(placedAt, ROOT)) {
       // Input was already accepted: fence and stop the misplaced worker before giving up.
@@ -473,14 +494,6 @@ class Controller {
         ? `; worker-${residual.stage} failed, dispatch ${worker.dispatchId} may still be running there and needs manual stop/release`
         : "; the worker was stopped and released";
       throw new LoopError("ORCA_ERROR", `worker was placed in ${placedAt}, not the target worktree ${ROOT}${tail}`, { receipt, worker, residual });
-    }
-    if (response.status !== 0) {
-      const inputAccepted = findValue(receipt, ["inputAccepted", "input_accepted"]);
-      throw new LoopError("WORKER_FAILED", "worker-start failed", {
-        receipt,
-        worker,
-        retryableNoStart: inputAccepted === false,
-      });
     }
     this.log("worker_started", worker);
     return worker;
@@ -701,7 +714,8 @@ export async function main(argv = process.argv.slice(2)) {
     if (!MODES.includes(config.mode)) throw new LoopError("PROTOCOL_ERROR", "mode must be code or spec");
     if (config.mode === "spec" && !options.artifact) throw new LoopError("PROTOCOL_ERROR", "--mode spec requires --artifact <path>");
     if (config.mode === "code" && options.artifact) throw new LoopError("PROTOCOL_ERROR", "--artifact is only valid with --mode spec");
-    const artifact = resolveArtifact(options.artifact);
+    // Like --task-file, --artifact is taken relative to the caller's cwd, then validated against ROOT.
+    const artifact = resolveArtifact(options.artifact && resolve(process.cwd(), options.artifact));
     if (!Number.isInteger(config.maxRounds) || config.maxRounds < 1 || config.maxRounds > 20) {
       throw new LoopError("PROTOCOL_ERROR", "maxRounds must be an integer from 1 to 20");
     }

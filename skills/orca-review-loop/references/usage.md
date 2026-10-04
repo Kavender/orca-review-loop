@@ -40,7 +40,7 @@ Omitting `--mode` is identical to v1 behavior. A `"mode"` key in `.orca-loop.jso
 
 Spec mode requires `--artifact <path>`:
 
-- The path is resolved against the target project root and must stay inside it after resolving symlinks; a symlinked artifact or a non-regular file is rejected.
+- The path is resolved against the caller's current directory, like `--task-file`, and must stay inside the target project root after resolving symlinks; a symlinked artifact or a non-regular file is rejected.
 - `--artifact` is rejected in code mode.
 - After each Claude `DONE:` the controller checks the artifact exists as a regular file before starting the reviewer; otherwise it stops with `PROTOCOL_ERROR`.
 - If the file does not exist, Claude is told to create it; otherwise to revise it in place.
@@ -60,7 +60,7 @@ Reviewer read-only protection, no-progress detection, and the review-round cap w
 Built-in defaults can be overridden by a `.orca-loop.json` file in the target project's root. A complete example is included in the repository at `examples/orca-loop.config.json`.
 
 - Claude implements and repairs; Codex reviews.
-- `worktree: "current"` means the directory the controller runs in. Before creating the Run, the controller resolves the configured selector with `orca worktree show` (`current` becomes `path:<that directory>`), requires the resolved path to equal its own directory, and passes the resolved worktree ID to every `worker-start`. Any selector that resolves elsewhere stops with `ORCA_ERROR` before any worker exists, because git hashing, artifact checks, and mutation detection all run against the controller's directory. If a start receipt still reports a different worktree, that worker is stopped and released before the controller exits with `ORCA_ERROR`.
+- `worktree: "current"` means the directory the controller runs in. Before creating the Run, the controller resolves the configured selector with `orca worktree show` (`current` becomes `path:<that directory>`), requires the resolved path to equal its own directory, and passes the resolved worktree ID to every `worker-start`. Any selector that resolves elsewhere stops with `ORCA_ERROR` before any worker exists, because git hashing, artifact checks, and mutation detection all run against the controller's directory. If a start receipt still reports a different worktree, that worker is stopped and released before the controller exits with `ORCA_ERROR`. Consequently `worktree` only accepts selectors that resolve to the controller's directory; creation selectors such as `new-child` or `new-top-level` are rejected.
 - Workers use the user's configured model unless `model` is explicitly set. `effort` is only passed with a model.
 - A worker gets 60 seconds to acknowledge its dispatch and 15 minutes per mailbox wait.
 - Three empty waits trigger worker inspection.

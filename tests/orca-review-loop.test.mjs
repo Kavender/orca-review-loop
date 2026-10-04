@@ -424,3 +424,15 @@ test("run_created records the resolved worktree", () => {
   assert.equal(created.worktreeId, `fake-repo::${root}`);
   assert.equal(created.worktreeSelector, `path:${root}`);
 });
+
+test("a failed worker-start with a stray worktree id is still WORKER_FAILED", () => {
+  const { result, state } = runScenario([], { scenario: { startFailures: 1, placeAt: "/tmp/elsewhere" }, config: { maxLaunchRetries: 0 } });
+  assert.match(result.stderr, /RESULT WORKER_FAILED/);
+  assert.deepEqual(state.stops, []);
+});
+
+test("an artifact whose parent is a regular file fails with a clear error", () => {
+  const { result, state } = runScenario([], { args: ["--mode", "spec", "--artifact", "candidate.txt/guest.md"] });
+  assert.match(result.stderr, /RESULT PROTOCOL_ERROR: artifact path is not usable: ENOTDIR/);
+  assert.equal(state.starts, 0);
+});
