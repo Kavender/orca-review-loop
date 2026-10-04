@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -553,5 +553,6 @@ export async function main(argv = process.argv.slice(2)) {
   }
 }
 
-const invoked = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+// realpathSync: when installed globally, argv[1] is the bin symlink, so compare real paths.
+const invoked = process.argv[1] && realpathSync(resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url));
 if (invoked) process.exitCode = await main();
