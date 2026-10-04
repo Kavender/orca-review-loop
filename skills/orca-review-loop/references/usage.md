@@ -15,6 +15,18 @@ The controller creates one fresh Orca Run per invocation. It starts exactly one 
 
 ## Usage
 
+Run the guided setup once per project, or whenever worker pins need to change:
+
+```bash
+orca-review-loop setup
+```
+
+It requires an interactive terminal. Setup asks for each role's agent, model, and thinking effort; shows a preview; and then creates or updates `.orca-loop.json`. It preserves unrelated top-level settings and never creates an Orca Run or worker. Pass `--config <path>` to update another config file inside the target project.
+
+For Claude, setup reads the live choices from the installed CLI's local `/model` and `/effort` commands. For Codex, it reads `codex debug models`, excludes hidden entries, and offers the reasoning levels declared by the selected model. A discovery failure is reported and falls back to `default` or manual opaque values. The package does not ship a model-name catalogue.
+
+Choosing `default` writes `null`. At runtime that means the corresponding flag is omitted and the agent's own configured default applies. An explicit effort requires an explicit model.
+
 ```bash
 orca-review-loop \
   --task "Fix the bug and add regression coverage" \
@@ -60,8 +72,9 @@ Reviewer read-only protection, no-progress detection, and the review-round cap w
 Built-in defaults can be overridden by a `.orca-loop.json` file in the target project's root. A complete example is included in the repository at `examples/orca-loop.config.json`.
 
 - Claude implements and repairs; Codex reviews.
+- `implement.agent`, `implement.model`, and `implement.effort` select the implementation worker. The corresponding `review` fields select the reviewer. Agent must be a non-empty string; model and effort are either non-empty strings or `null`. An effort without a model is rejected before Orca is contacted.
 - `worktree: "current"` means the directory the controller runs in. Before creating the Run, the controller resolves the configured selector with `orca worktree show` (`current` becomes `path:<that directory>`), requires the resolved path to equal its own directory, and passes the resolved worktree ID to every `worker-start`. Any selector that resolves elsewhere stops with `ORCA_ERROR` before any worker exists, because git hashing, artifact checks, and mutation detection all run against the controller's directory. If a start receipt still reports a different worktree, that worker is stopped and released before the controller exits with `ORCA_ERROR`. Consequently `worktree` only accepts selectors that resolve to the controller's directory; creation selectors such as `new-child` or `new-top-level` are rejected.
-- Workers use the user's configured model unless `model` is explicitly set. `effort` is only passed with a model.
+- Workers use the agent's configured model unless `model` is explicitly set. `effort` is only passed with an explicit model.
 - A worker gets 60 seconds to acknowledge its dispatch and 15 minutes per mailbox wait.
 - Three empty waits trigger worker inspection.
 - Full task and review bodies are not written to the JSONL event log by default.

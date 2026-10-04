@@ -4,25 +4,11 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, s
 import { basename, dirname, isAbsolute, join, relative as relativePath, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { ConfigError, DEFAULTS, mergeConfig, validateConfig } from "./config.mjs";
+import { runSetup } from "./setup.mjs";
 
 // The target is always the caller's project, never this skill/package directory.
 const ROOT = resolve(process.env.ORCA_LOOP_ROOT || process.cwd());
-const MODES = ["code", "spec"];
-const DEFAULTS = {
-  mode: "code",
-  maxRounds: 5,
-  worktree: "current",
-  implement: { agent: "claude", model: null, effort: null },
-  review: { agent: "codex", model: null, effort: null },
-  ackTimeoutMs: 60_000,
-  waitTimeoutMs: 900_000,
-  maxTotalMinutes: 360,
-  maxLaunchRetries: 1,
-  maxEmptyWaitsBeforeInspect: 3,
-  dirtyWorktreePolicy: "refuse",
-  retainTerminals: false,
-  logBodies: false,
-};
 
 export class LoopError extends Error {
   constructor(status, message, details = {}) {
@@ -185,15 +171,6 @@ function sha(value) {
   return createHash("sha256").update(String(value ?? "")).digest("hex");
 }
 
-function mergeConfig(base, extra) {
-  return {
-    ...base,
-    ...extra,
-    implement: { ...base.implement, ...(extra.implement ?? {}) },
-    review: { ...base.review, ...(extra.review ?? {}) },
-  };
-}
-
 export function parseArgs(argv) {
   const options = { allowDirty: false, verboseLog: false };
   for (let i = 0; i < argv.length; i += 1) {
@@ -218,7 +195,7 @@ export function parseArgs(argv) {
 }
 
 function usage() {
-  return `Usage: orca-review-loop (--task <text> | --task-file <path>) [options]\n\n` +
+  return `Usage:\n  orca-review-loop setup [--config <path>]\n  orca-review-loop (--task <text> | --task-file <path>) [options]\n\n` +
     `Options:\n  --mode <code|spec>      default: code\n  --artifact <path>       spec file to create/revise (required for --mode spec)\n` +
     `  --max-rounds <1-20>\n  --config <path>\n  --allow-dirty\n  --verbose-log\n`;
 }
@@ -703,6 +680,10 @@ function livenessState(row) {
 export async function main(argv = process.argv.slice(2)) {
   let controller;
   try {
+    if (argv[0] === "setup") {
+      await runSetup({ root: ROOT, argv: argv.slice(1) });
+      return 0;
+    }
     const options = parseArgs(argv);
     if (options.help) { process.stdout.write(usage()); return 0; }
     if (!options.task && !options.taskFile) throw new LoopError("PROTOCOL_ERROR", "--task or --task-file is required");
@@ -711,17 +692,11 @@ export async function main(argv = process.argv.slice(2)) {
     const config = mergeConfig(DEFAULTS, fromFile);
     if (options.maxRounds !== undefined) config.maxRounds = options.maxRounds;
     if (options.mode !== undefined) config.mode = options.mode;
-    if (!MODES.includes(config.mode)) throw new LoopError("PROTOCOL_ERROR", "mode must be code or spec");
+    validateConfig(config);
     if (config.mode === "spec" && !options.artifact) throw new LoopError("PROTOCOL_ERROR", "--mode spec requires --artifact <path>");
     if (config.mode === "code" && options.artifact) throw new LoopError("PROTOCOL_ERROR", "--artifact is only valid with --mode spec");
     // Like --task-file, --artifact is taken relative to the caller's cwd, then validated against ROOT.
     const artifact = resolveArtifact(options.artifact && resolve(process.cwd(), options.artifact));
-    if (!Number.isInteger(config.maxRounds) || config.maxRounds < 1 || config.maxRounds > 20) {
-      throw new LoopError("PROTOCOL_ERROR", "maxRounds must be an integer from 1 to 20");
-    }
-    if (!Number.isInteger(config.maxLaunchRetries) || config.maxLaunchRetries < 0 || config.maxLaunchRetries > 1) {
-      throw new LoopError("PROTOCOL_ERROR", "maxLaunchRetries must be 0 or 1");
-    }
     const task = options.task ?? readFileSync(isAbsolute(options.taskFile) ? options.taskFile : resolve(process.cwd(), options.taskFile), "utf8").trim();
     if (!task) throw new LoopError("PROTOCOL_ERROR", "task must not be empty");
     if (!options.allowDirty && config.dirtyWorktreePolicy === "refuse" && isDirty()) {
@@ -739,7 +714,8 @@ export async function main(argv = process.argv.slice(2)) {
     process.stdout.write(`RESULT ${result.status}\n`);
     return 0;
   } catch (error) {
-    const wrapped = error instanceof LoopError ? error : new LoopError("PROTOCOL_ERROR", error.stack || error.message || String(error));
+    const wrapped = error instanceof LoopError ? error : new LoopError("PROTOCOL_ERROR",
+      error instanceof ConfigError ? error.message : error.stack || error.message || String(error));
     controller?.log("result", { status: wrapped.status, message: wrapped.message, details: wrapped.details });
     process.stderr.write(`RESULT ${wrapped.status}: ${wrapped.message}\n`);
     return wrapped.status === "PASS" ? 0 : 1;

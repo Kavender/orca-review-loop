@@ -80,6 +80,33 @@ test("PASS on first review", () => {
   assert.equal(state.releases.length, 2);
 });
 
+test("configured model and effort pins are forwarded by role", () => {
+  const { result, state } = runScenario([{ disposition: "DONE" }, { disposition: "PASS" }], {
+    config: {
+      implement: { agent: "claude", model: "opus", effort: "high" },
+      review: { agent: "codex", model: "gpt-test", effort: "xhigh" },
+    },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const starts = state.commands.filter((entry) => entry.command === "worker-start");
+  assert.deepEqual(starts.map((entry) => entry.args[entry.args.indexOf("--model") + 1]), ["opus", "gpt-test"]);
+  assert.deepEqual(starts.map((entry) => entry.args[entry.args.indexOf("--effort") + 1]), ["high", "xhigh"]);
+});
+
+for (const [name, config, pattern] of [
+  ["effort without model", { implement: { effort: "high" } }, /implement\.effort requires implement\.model/],
+  ["non-object role", { implement: "claude" }, /implement must be an object/],
+  ["empty model", { review: { model: "" } }, /review\.model must be null or a non-empty string/],
+]) {
+  test(`invalid config rejects ${name} before contacting Orca`, () => {
+    const { result, state } = runScenario([], { config });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /RESULT PROTOCOL_ERROR/);
+    assert.match(result.stderr, pattern);
+    assert.deepEqual(state.commands, []);
+  });
+}
+
 test("NEEDS_FIX automatically routes exact feedback and then passes", () => {
   const body = "Fix candidate.txt at line 1";
   const { result, state } = runScenario([

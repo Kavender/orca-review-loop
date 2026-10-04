@@ -11,8 +11,9 @@ Use the deterministic controller in `scripts/orca-review-loop.mjs`; do not coord
 
 1. Work from the target project's root directory.
 2. Resolve the session's Orca executable and load its version-matched orchestration guide with `orca skills get orchestration --json` (or the executable selected by the Orca CLI discovery rules).
-3. Inspect the target worktree. The controller refuses dirty work by default; use `--allow-dirty` only when the user deliberately accepts that baseline.
-4. Confirm the task is concrete enough for an implementer and independent reviewer. Do not broaden its authority.
+3. If the user wants to select worker models or thinking effort, have them run `orca-review-loop setup` in an interactive terminal from the project root. It discovers current Claude and Codex choices and updates `.orca-loop.json` without starting a worker. Do not start interactive setup inside a non-interactive command session.
+4. Inspect the target worktree. The controller refuses dirty work by default; use `--allow-dirty` only when the user deliberately accepts that baseline.
+5. Confirm the task is concrete enough for an implementer and independent reviewer. Do not broaden its authority.
 
 ## Run
 
