@@ -3,10 +3,15 @@
 A reusable deterministic controller and Codex Skill for this workflow:
 
 ```text
-Claude implements → Codex reviews → PASS
-                         ↓ NEEDS_FIX
-                   Claude repairs → fresh Codex review
+Claude produces → Codex reviews → PASS
+                        ↓ NEEDS_FIX
+                  Claude revises → fresh Codex review
 ```
+
+It runs in two modes over the same controller:
+
+- `--mode code` (default): Claude implements and repairs code; Codex reviews the working-tree diff for bugs, regressions, and missing tests.
+- `--mode spec`: Claude creates or revises one specification file; Codex reviews that document for implementation readiness.
 
 The controller uses Orca's durable Run, Task, Dispatch, and mailbox lifecycle. It runs one worker at a time, distinguishes lifecycle success from review approval, forwards exact review feedback, and defaults to at most five Codex reviews.
 
@@ -38,7 +43,27 @@ cd /path/to/project
 orca-review-loop --task "Fix the bug and add regression coverage" --max-rounds 5
 ```
 
-Use `--task-file <path>` for a longer specification. The target worktree must be clean unless `--allow-dirty` is explicitly supplied. The controller never commits, pushes, merges, resets, cleans, or stashes; review the resulting diff and commit it yourself.
+Use `--task-file <path>` for a longer specification. The target worktree must be clean unless `--allow-dirty` is explicitly supplied.
+
+### Spec mode
+
+```bash
+orca-review-loop \
+  --mode spec \
+  --task "Design guest access with abuse protection" \
+  --artifact docs/specs/guest-access.md
+```
+
+`--artifact` names the one file Claude may deliver. It must be a regular file inside the target worktree (symlinks are rejected); if it does not exist Claude creates it, otherwise Claude revises it in place. The controller verifies Claude actually produced it before each review, and tracks its content even when the path is git-ignored. Codex reviews the document and returns `PASS:` only when it is implementation-ready; its review body separates blocking findings from optional suggestions, and only blocking findings justify another round.
+
+The two modes form a natural two-stage workflow, run by hand:
+
+```bash
+orca-review-loop --mode spec --task "..." --artifact docs/specs/guest-access.md   # until PASS
+orca-review-loop --mode code --task-file docs/specs/guest-access.md               # then implement it
+```
+
+After a spec-mode `PASS` the controller prints that suggested code-mode command. It does not start it automatically. The controller never commits, pushes, merges, resets, cleans, or stashes; review the resulting diff and commit it yourself.
 
 Defaults can be overridden with a `.orca-loop.json` in the target project root (see [`examples/orca-loop.config.json`](examples/orca-loop.config.json)). Runtime state lives under `.orca-loop/`, which you should add to the target project's `.gitignore`.
 

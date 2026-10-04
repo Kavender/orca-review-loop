@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 const scenarioPath = process.env.FAKE_ORCA_SCENARIO;
 const statePath = process.env.FAKE_ORCA_STATE;
@@ -8,10 +9,10 @@ const scenario = JSON.parse(readFileSync(scenarioPath, "utf8"));
 const state = existsSync(statePath)
   ? JSON.parse(readFileSync(statePath, "utf8"))
   : { starts: 0, completion: 0, current: null, heartbeatSent: false, pending: null,
-      active: 0, maxActive: 0, commands: [], releases: [], acks: [] };
+      active: 0, maxActive: 0, commands: [], releases: [], acks: [], stops: [] };
 
 const args = process.argv.slice(2).filter((arg) => arg !== "--json");
-const command = args[0] === "orchestration" ? args[1] : args[0];
+const command = args[0] === "orchestration" || args[0] === "worktree" ? `${args[0] === "worktree" ? "worktree-" : ""}${args[1]}` : args[0];
 const value = (flag) => {
   const index = args.indexOf(flag);
   return index >= 0 ? args[index + 1] : undefined;
@@ -25,7 +26,15 @@ const output = (result, status = 0) => {
 
 state.commands.push({ command, args });
 
-if (command === "status") {
+if (command === "worktree-show") {
+  const selector = value("--worktree") || "";
+  const path = scenario.resolveTo || (selector.startsWith("path:") ? selector.slice(5) : root);
+  output({ worktree: { id: `fake-repo::${path}`, path } });
+} else if (command === "worker-stop") {
+  state.stops.push(value("--dispatch"));
+  if (scenario.stopFails) output({ error: { message: "stop refused" } }, 1);
+  else output({ dispatchId: value("--dispatch"), state: "stopped" });
+} else if (command === "status") {
   output({ runtime: { reachable: true, state: "ready" } });
 } else if (command === "run-create") {
   output({ run: { id: "run_test" } });
@@ -43,7 +52,10 @@ if (command === "status") {
     output({ task: { id: state.current.taskId }, dispatch: { id: state.current.dispatchId },
       inputAccepted: false, failedStage: "before_input" }, 1);
   } else {
-    output({ task: { id: state.current.taskId }, dispatch: { id: state.current.dispatchId }, terminal: { handle: `term_${id}` } });
+    const selector = value("--worktree") || "";
+    const placed = scenario.placeAt || (selector.startsWith("id:fake-repo::") ? selector.slice("id:fake-repo::".length) : root);
+    output({ task: { id: state.current.taskId }, dispatch: { id: state.current.dispatchId }, terminal: { handle: `term_${id}` },
+      resolvedWorktreeId: `fake-repo::${placed}` });
   }
 } else if (command === "check" && value("--ack")) {
   state.acks.push(value("--ack"));
@@ -65,6 +77,18 @@ if (command === "status") {
   } else if (state.completion < scenario.completions.length) {
     const item = scenario.completions[state.completion++];
     if (item.mutate) appendFileSync(`${root}/candidate.txt`, item.mutate);
+    if (item.symlinkParent) {
+      const outside = join(dirname(root), `outside_${state.completion}`);
+      mkdirSync(outside, { recursive: true });
+      writeFileSync(join(outside, "guest.md"), "outside\n");
+      mkdirSync(dirname(join(root, item.symlinkParent)), { recursive: true });
+      symlinkSync(outside, join(root, item.symlinkParent));
+    }
+    if (item.write) {
+      const target = join(root, item.write.path);
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, item.write.content ?? "");
+    }
     const payload = {
       taskId: item.wrongTask ? "task_stale" : state.current.taskId,
       dispatchId: item.wrongDispatch ? "ctx_stale" : state.current.dispatchId,
@@ -83,7 +107,7 @@ if (command === "status") {
     output({ timedOut: true, delivery: { id: `empty_${state.commands.length}`, messages: [] } });
   }
 } else if (command === "worker-list") {
-  output({ workers: [{ dispatchId: state.current?.dispatchId, projection: { liveness: { state: scenario.liveness || "unverifiable" } } }] });
+  output({ workers: [{ dispatchId: state.current?.dispatchId, projection: { liveness: { verdict: scenario.liveness || "unverifiable" } } }] });
 } else if (command === "worker-show") {
   output({ worker: { dispatchId: value("--dispatch"), observation: { status: scenario.liveness || "unverifiable" } } });
 } else if (command === "worker-read") {

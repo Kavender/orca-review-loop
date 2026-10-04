@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative as relativePath, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 // The target is always the caller's project, never this skill/package directory.
 const ROOT = resolve(process.env.ORCA_LOOP_ROOT || process.cwd());
+const MODES = ["code", "spec"];
 const DEFAULTS = {
+  mode: "code",
   maxRounds: 5,
   worktree: "current",
   implement: { agent: "claude", model: null, effort: null },
@@ -201,6 +203,8 @@ export function parseArgs(argv) {
       return argv[++i];
     };
     if (arg === "--task") options.task = take();
+    else if (arg === "--mode") options.mode = take();
+    else if (arg === "--artifact") options.artifact = take();
     else if (arg === "--task-file") options.taskFile = take();
     else if (arg === "--max-rounds") options.maxRounds = Number(take());
     else if (arg === "--config") options.config = take();
@@ -215,7 +219,8 @@ export function parseArgs(argv) {
 
 function usage() {
   return `Usage: orca-review-loop (--task <text> | --task-file <path>) [options]\n\n` +
-    `Options:\n  --max-rounds <1-20>\n  --config <path>\n  --allow-dirty\n  --verbose-log\n`;
+    `Options:\n  --mode <code|spec>      default: code\n  --artifact <path>       spec file to create/revise (required for --mode spec)\n` +
+    `  --max-rounds <1-20>\n  --config <path>\n  --allow-dirty\n  --verbose-log\n`;
 }
 
 function messagesFrom(receipt) {
@@ -246,7 +251,12 @@ function promptHeader() {
     `Before other work, send the heartbeat required by the injected Orca dispatch protocol. At natural checkpoints, check coordinator follow-ups.\n`;
 }
 
-function implementationPrompt(task, round, feedback) {
+function artifactLine(ctx) {
+  return ctx.artifact ? `Declared artifact: ${ctx.artifact.relative}\n\n` : "";
+}
+
+function codeProducerPrompt(ctx, round, feedback) {
+  const task = ctx.task;
   if (round === 1) return `You are the implementation owner.\n\nOriginal user task:\n${task}\n\n${promptHeader()}\n` +
     `Implement the task completely and run relevant verification. At completion send exactly one worker_done with subject DONE:, BLOCKED:, or NEEDS_REPLAN:. Include modified files and verification in the body, then stop.`;
   return `You are the implementation owner repairing independently reviewed work.\n\nOriginal user task:\n${task}\n\nReview round: ${round - 1}\n\n` +
@@ -255,15 +265,126 @@ function implementationPrompt(task, round, feedback) {
     `At completion send exactly one worker_done with subject DONE:, BLOCKED:, or NEEDS_REPLAN:, then stop.`;
 }
 
-function reviewPrompt(task, round) {
-  return `You are the independent code reviewer.\n\nOriginal user task:\n${task}\n\nThis is review round ${round}.\n\n` +
+function codeReviewerPrompt(ctx, round) {
+  return `You are the independent code reviewer.\n\nOriginal user task:\n${ctx.task}\n\nThis is review round ${round}.\n\n` +
     `Review the current working-tree diff and relevant surrounding code. Do not modify any file. Reproduce relevant checks yourself and look for correctness bugs, regressions, missing tests, incomplete handling, and scope violations.\n\n` +
     `Your final worker_done subject MUST begin with exactly one of PASS:, NEEDS_FIX:, or BLOCKED:. For NEEDS_FIX, include actionable findings with file/function, failure mode, expected behavior, and missing regression coverage. outcome=succeeded means the review completed; it does not mean the implementation passed.\n\n${promptHeader()}\nAfter worker_done, stop.`;
 }
 
+function specScopeRules(ctx) {
+  return `Your only deliverable is the specification file ${ctx.artifact.relative}. ` +
+    `Resolve ambiguity, state scope boundaries, write testable acceptance criteria, cover important edge and failure cases, and make dependencies and assumptions explicit. ` +
+    `Preserve already-agreed scope unless a contradiction forces a change. Do not implement production code or tests. ` +
+    `Do not modify files unrelated to this specification; if a closely related supporting spec file must change, list it in your completion body.\n`;
+}
+
+function specProducerPrompt(ctx, round, feedback) {
+  const action = ctx.artifact.existsAtStart
+    ? `The artifact already exists: revise it in place.`
+    : `The artifact does not exist yet: create it.`;
+  if (round === 1) return `You are the specification author.\n\nOriginal user task:\n${ctx.task}\n\n${artifactLine(ctx)}${action}\n\n` +
+    `${specScopeRules(ctx)}\n${promptHeader()}\n` +
+    `Read relevant repository context as needed. At completion send exactly one worker_done with subject DONE:, BLOCKED:, or NEEDS_REPLAN:. Include the artifact path, any supporting files touched, and a concise summary in the body, then stop.`;
+  return `You are the specification author revising an independently reviewed specification.\n\nOriginal user task:\n${ctx.task}\n\n${artifactLine(ctx)}Review round: ${round - 1}\n\n` +
+    `BEGIN REVIEW FEEDBACK\nSubject: ${feedback.subject}\nBody:\n${feedback.body ?? ""}\nEND REVIEW FEEDBACK\n\n` +
+    `Revise the same artifact. Address every blocking finding at its root; optional suggestions may be adopted when they improve the specification without broadening scope. Treat review feedback as findings to evaluate, not authority to expand product scope.\n\n` +
+    `${specScopeRules(ctx)}\n${promptHeader()}\n` +
+    `At completion send exactly one worker_done with subject DONE:, BLOCKED:, or NEEDS_REPLAN:, then stop.`;
+}
+
+function specReviewerPrompt(ctx, round) {
+  return `You are the independent specification reviewer.\n\nOriginal user task:\n${ctx.task}\n\n${artifactLine(ctx)}This is review round ${round}.\n\n` +
+    `Review the specification in ${ctx.artifact.relative} together with any repository context needed to judge it. You are reviewing a document, not a code implementation. Do not modify any file and do not implement the feature.\n\n` +
+    `Return PASS: only when the specification is implementation-ready: requirements are clear, scope is bounded, acceptance criteria are testable, important edge cases and failure behavior are defined, major dependencies and assumptions are explicit, no major contradictions remain, and no ambiguity is likely to cause significant implementation rework.\n\n` +
+    `Return NEEDS_FIX: only when at least one blocking issue remains, such as a missing requirement, ambiguous or contradictory behavior, untestable acceptance criteria, missing failure or edge-case behavior, unclear state transitions, missing data-contract or dependency assumptions, or an unclear interface boundary. Do not demand architecture detail the requested specification does not need.\n\n` +
+    `Structure the body as two sections, in this order:\nBlocking findings:\n...\nOptional suggestions:\n...\nOnly blocking findings justify NEEDS_FIX. If Blocking findings is empty, the verdict must be PASS.\n\n` +
+    `Your final worker_done subject MUST begin with exactly one of PASS:, NEEDS_FIX:, or BLOCKED:. outcome=succeeded means the review completed; it does not mean the specification passed.\n\n${promptHeader()}\nAfter worker_done, stop.`;
+}
+
+const POLICIES = {
+  code: { producerPrompt: codeProducerPrompt, reviewerPrompt: codeReviewerPrompt },
+  spec: { producerPrompt: specProducerPrompt, reviewerPrompt: specReviewerPrompt },
+};
+
+// Resolve symlinks in the deepest existing ancestor so a linked directory cannot escape the worktree.
+function realizePath(absolute) {
+  let existing = absolute;
+  const rest = [];
+  while (!existsSync(existing)) {
+    const parent = dirname(existing);
+    if (parent === existing) break;
+    rest.unshift(basename(existing));
+    existing = parent;
+  }
+  return join(realpathSync(existing), ...rest);
+}
+
+export function resolveArtifact(path, root = ROOT) {
+  if (!path) return null;
+  const absolute = resolve(root, path);
+  const realRoot = realpathSync(root);
+  let realAbsolute;
+  try {
+    realAbsolute = realizePath(absolute);
+  } catch (error) {
+    throw new LoopError("PROTOCOL_ERROR", `artifact path is not usable: ${error.code ?? error.message}`);
+  }
+  const relative = relativePath(realRoot, realAbsolute);
+  if (!relative || relative === ".." || relative.startsWith(`..${sep}`) || isAbsolute(relative)) {
+    throw new LoopError("PROTOCOL_ERROR", "artifact must be inside the target worktree");
+  }
+  let info;
+  try {
+    info = lstatSync(absolute, { throwIfNoEntry: false });
+  } catch (error) {
+    // e.g. ENOTDIR when a parent path component is a regular file.
+    throw new LoopError("PROTOCOL_ERROR", `artifact path is not usable: ${error.code ?? error.message}`);
+  }
+  if (info?.isSymbolicLink()) throw new LoopError("PROTOCOL_ERROR", "artifact must not be a symbolic link");
+  if (info && !info.isFile()) throw new LoopError("PROTOCOL_ERROR", "artifact must be a regular file");
+  // Report and operate on the canonical in-root path so symlinked roots (e.g. /var -> /private/var) display cleanly.
+  return { relative, absolute: join(realRoot, relative), existsAtStart: Boolean(info) };
+}
+
+// Artifact state is hashed independently of git so an ignored spec file is still observed.
+export function artifactHash(artifact) {
+  if (!artifact) return "";
+  const info = lstatSync(artifact.absolute, { throwIfNoEntry: false });
+  if (!info) return "absent";
+  const kind = info.isFile() ? "file" : info.isSymbolicLink() ? "symlink" : "other";
+  const hash = createHash("sha256").update(kind);
+  if (info.isFile()) hash.update(readFileSync(artifact.absolute));
+  return hash.digest("hex");
+}
+
+function shellQuote(value) {
+  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function worktreeSelector(configured) {
+  return configured === "current" ? `path:${ROOT}` : configured;
+}
+
+function worktreePathOf(receipt) {
+  // Prefer the fields that describe this dispatch's placement; deep search is only a fallback.
+  const explicit = [receipt?.resolvedWorktreeId, receipt?.worktreeId, receipt?.dispatch?.worktreeId,
+    receipt?.placement?.worktreeId, receipt?.worktree?.id].find((v) => typeof v === "string");
+  const id = explicit ?? findValue(receipt, ["resolvedWorktreeId", "worktreeId", "worktree_id"]);
+  if (typeof id !== "string") return null;
+  const index = id.indexOf("::");
+  return index >= 0 ? id.slice(index + 2) : null;
+}
+
+function samePath(a, b) {
+  try { return realpathSync(a) === realpathSync(b); } catch { return a === b; }
+}
+
 class Controller {
-  constructor(task, config, options, orca) {
+  constructor(task, config, options, orca, ctx = { task, artifact: null }) {
     this.task = task;
+    this.ctx = ctx;
+    this.mode = config.mode;
+    this.policy = POLICIES[config.mode];
     this.config = config;
     this.options = options;
     this.orca = orca;
@@ -289,6 +410,40 @@ class Controller {
 
   call(args, options) { return this.orca(["orchestration", ...args], options).data; }
 
+  snapshot() { return `${workingTreeHash()}:${artifactHash(this.ctx.artifact)}`; }
+
+  verifyArtifactDelivered(round) {
+    const relative = this.ctx.artifact.relative;
+    let live;
+    try {
+      live = resolveArtifact(relative);
+    } catch (error) {
+      throw new LoopError("PROTOCOL_ERROR", `producer reported DONE but ${relative} is no longer valid: ${error.message}`, { round });
+    }
+    if (!live.existsAtStart || !lstatSync(live.absolute, { throwIfNoEntry: false })?.isFile()) {
+      throw new LoopError("PROTOCOL_ERROR", `producer reported DONE but ${relative} is not a regular file`, { round });
+    }
+  }
+
+  // Every selector, including the default "current", must resolve to the controller's own directory,
+  // because git hashing, artifact checks, and mutation detection all operate on ROOT.
+  resolveWorktree() {
+    const selector = worktreeSelector(this.config.worktree);
+    const receipt = this.orca(["worktree", "show", "--worktree", selector], { timeoutMs: 30_000 }).data;
+    const worktree = receipt?.worktree ?? receipt?.result?.worktree ?? receipt;
+    const id = worktree?.id;
+    const path = worktree?.path ?? (typeof id === "string" && id.includes("::") ? id.slice(id.indexOf("::") + 2) : null);
+    if (typeof id !== "string" || !path) {
+      throw new LoopError("ORCA_ERROR", `could not resolve worktree selector ${selector}`, { receipt });
+    }
+    if (!samePath(path, ROOT)) {
+      throw new LoopError("ORCA_ERROR", `worktree selector ${selector} resolves to ${path}, not the target worktree ${ROOT}`, { receipt });
+    }
+    this.worktreeId = id;
+    this.worktreePath = path;
+    this.worktreeSelector = selector;
+  }
+
   createRun() {
     const receipt = this.call(["run-create", "--objective", this.task]);
     this.runId = namedId(receipt, "run");
@@ -296,7 +451,8 @@ class Controller {
     this.runDir = join(ROOT, ".orca-loop", this.runId);
     mkdirSync(this.runDir, { recursive: true, mode: 0o700 });
     this.print(`RUN ${this.runId}`);
-    this.log("run_created");
+    this.log("run_created", { mode: this.mode, artifact: this.ctx.artifact?.relative ?? null,
+      worktreeSelector: this.worktreeSelector, worktreeId: this.worktreeId, worktreePath: this.worktreePath });
   }
 
   startWorker({ phase, round, role, prompt }, retryOf = null) {
@@ -304,7 +460,7 @@ class Controller {
     const args = ["worker-start"];
     if (retryOf) args.push("--task", retryOf.taskId, "--retry-of", retryOf.dispatchId);
     else args.push("--spec", prompt);
-    args.push("--worktree", this.config.worktree, "--agent", role.agent,
+    args.push("--worktree", `id:${this.worktreeId}`, "--agent", role.agent,
       "--task-title", `auto-loop ${phase} r${round}`, "--run", this.runId);
     if (!retryOf && this.rootTaskId) args.push("--parent", this.rootTaskId);
     if (role.model) args.push("--model", role.model);
@@ -329,6 +485,15 @@ class Controller {
         worker,
         retryableNoStart: inputAccepted === false,
       });
+    }
+    const placedAt = worktreePathOf(receipt);
+    if (placedAt && !samePath(placedAt, ROOT)) {
+      // Input was already accepted: fence and stop the misplaced worker before giving up.
+      const residual = this.stopAndRelease(worker, "misplaced");
+      const tail = residual
+        ? `; worker-${residual.stage} failed, dispatch ${worker.dispatchId} may still be running there and needs manual stop/release`
+        : "; the worker was stopped and released";
+      throw new LoopError("ORCA_ERROR", `worker was placed in ${placedAt}, not the target worktree ${ROOT}${tail}`, { receipt, worker, residual });
     }
     this.log("worker_started", worker);
     return worker;
@@ -399,6 +564,23 @@ class Controller {
     }
   }
 
+  // Returns null when the worker is reclaimed, otherwise details of the residual worker for the caller to report.
+  stopAndRelease(worker, reason) {
+    const stop = this.orca(["orchestration", "worker-stop", "--dispatch", worker.dispatchId], { allowFailure: true });
+    if (stop.status !== 0) {
+      this.log("worker_stop_failed", { ...worker, reason, receipt: stop.data });
+      return { worker, stopReceipt: stop.data, stage: "stop" };
+    }
+    this.log("worker_stopped", { ...worker, reason });
+    try {
+      this.release(worker);
+    } catch (error) {
+      this.log("worker_release_failed", { ...worker, reason, error: error.message });
+      return { worker, stopReceipt: stop.data, stage: "release", error: error.message };
+    }
+    return null;
+  }
+
   release(worker) {
     if (this.released.has(worker.dispatchId)) return;
     if (this.config.retainTerminals) this.call(["worker-retain", "--dispatch", worker.dispatchId]);
@@ -449,33 +631,35 @@ class Controller {
   }
 
   run() {
+    this.resolveWorktree();
     this.createRun();
     let feedback = null;
     let priorFeedbackHash = null;
     for (let round = 1; round <= this.config.maxRounds; round += 1) {
-      const beforeImplementation = workingTreeHash();
+      const beforeImplementation = this.snapshot();
       const phase = round === 1 ? "implement" : "repair";
       const implementation = this.runWorker({
         phase,
         round,
         role: this.config.implement,
-        prompt: implementationPrompt(this.task, round, feedback),
+        prompt: this.policy.producerPrompt(this.ctx, round, feedback),
       }, ["DONE", "BLOCKED", "NEEDS_REPLAN"]);
       this.print(`round ${round} Claude: ${implementation.disposition}`);
       this.log("implementation_complete", { round, phase, taskId: implementation.worker.taskId,
         dispatchId: implementation.worker.dispatchId, lifecycleOutcome: "succeeded",
-        disposition: implementation.disposition, gitDiffSha256: workingTreeHash() });
+        disposition: implementation.disposition, gitDiffSha256: this.snapshot() });
       if (implementation.disposition === "BLOCKED") throw new LoopError("BLOCKED", implementation.message.body || implementation.message.subject);
       if (implementation.disposition === "NEEDS_REPLAN") throw new LoopError("NEEDS_REPLAN", implementation.message.body || implementation.message.subject);
+      if (this.ctx.artifact) this.verifyArtifactDelivered(round);
 
-      const afterImplementation = workingTreeHash();
+      const afterImplementation = this.snapshot();
       const review = this.runWorker({
         phase: "review",
         round,
         role: this.config.review,
-        prompt: reviewPrompt(this.task, round),
+        prompt: this.policy.reviewerPrompt(this.ctx, round),
       }, ["PASS", "NEEDS_FIX", "BLOCKED"]);
-      const afterReview = workingTreeHash();
+      const afterReview = this.snapshot();
       if (afterReview !== afterImplementation) {
         throw new LoopError("REVIEWER_MUTATED_WORKTREE", "reviewer changed the working tree", { round });
       }
@@ -513,7 +697,7 @@ function findWorkerRow(node, dispatchId) {
 function livenessState(row) {
   const live = row?.projection?.liveness;
   if (typeof live === "string") return live;
-  return live?.state ?? live?.status ?? "unverifiable";
+  return live?.verdict ?? live?.state ?? live?.status ?? "unverifiable";
 }
 
 export async function main(argv = process.argv.slice(2)) {
@@ -526,6 +710,12 @@ export async function main(argv = process.argv.slice(2)) {
     const fromFile = existsSync(configPath) ? JSON.parse(readFileSync(configPath, "utf8")) : {};
     const config = mergeConfig(DEFAULTS, fromFile);
     if (options.maxRounds !== undefined) config.maxRounds = options.maxRounds;
+    if (options.mode !== undefined) config.mode = options.mode;
+    if (!MODES.includes(config.mode)) throw new LoopError("PROTOCOL_ERROR", "mode must be code or spec");
+    if (config.mode === "spec" && !options.artifact) throw new LoopError("PROTOCOL_ERROR", "--mode spec requires --artifact <path>");
+    if (config.mode === "code" && options.artifact) throw new LoopError("PROTOCOL_ERROR", "--artifact is only valid with --mode spec");
+    // Like --task-file, --artifact is taken relative to the caller's cwd, then validated against ROOT.
+    const artifact = resolveArtifact(options.artifact && resolve(process.cwd(), options.artifact));
     if (!Number.isInteger(config.maxRounds) || config.maxRounds < 1 || config.maxRounds > 20) {
       throw new LoopError("PROTOCOL_ERROR", "maxRounds must be an integer from 1 to 20");
     }
@@ -539,10 +729,13 @@ export async function main(argv = process.argv.slice(2)) {
     }
     const status = makeOrca()(["status"], { timeoutMs: 30_000 }).data;
     if (findValue(status, ["reachable"]) === false) throw new LoopError("ORCA_ERROR", "Orca runtime is not reachable");
-    controller = new Controller(task, config, options, makeOrca());
+    controller = new Controller(task, config, options, makeOrca(), { task, artifact });
     const result = controller.run();
     controller.log("result", result);
     rmSync(controller.runDir, { recursive: true, force: true });
+    if (config.mode === "spec" && result.status === "PASS") {
+      process.stdout.write(`Spec passed. Suggested next step:\n  orca-review-loop --mode code --task-file ${shellQuote(artifact.relative)}\n`);
+    }
     process.stdout.write(`RESULT ${result.status}\n`);
     return 0;
   } catch (error) {

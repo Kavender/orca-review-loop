@@ -1,4 +1,5 @@
 {
+  "mode": "code",
   "maxRounds": 5,
   "worktree": "current",
   "implement": { "agent": "claude", "model": null, "effort": null },

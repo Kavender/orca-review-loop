@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -17,6 +17,11 @@ function runScenario(completions, options = {}) {
   spawnSync("mkdir", [root]);
   writeFileSync(join(root, ".gitignore"), ".orca-loop/\n");
   writeFileSync(join(root, "candidate.txt"), "baseline\n");
+  for (const [path, content] of Object.entries(options.files ?? {})) {
+    mkdirSync(dirname(join(root, path)), { recursive: true });
+    writeFileSync(join(root, path), content);
+  }
+  options.setup?.(root);
   spawnSync("git", ["init", "-q"], { cwd: root });
   spawnSync("git", ["add", "."], { cwd: root });
   spawnSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "base"], { cwd: root });
@@ -28,8 +33,9 @@ function runScenario(completions, options = {}) {
     waitTimeoutMs: 1,
     maxEmptyWaitsBeforeInspect: 1,
     maxTotalMinutes: options.maxTotalMinutes ?? 1,
+    ...(options.config ?? {}),
   }));
-  const result = spawnSync(process.execPath, [CLI, "--task", "test task", "--allow-dirty"], {
+  const result = spawnSync(process.execPath, [CLI, "--task", "test task", "--allow-dirty", ...(options.args ?? [])], {
     cwd: root,
     encoding: "utf8",
     env: {
@@ -40,7 +46,12 @@ function runScenario(completions, options = {}) {
       FAKE_ORCA_STATE: statePath,
     },
   });
-  return { result, state: JSON.parse(readFileSync(statePath, "utf8")), root };
+  const state = existsSync(statePath) ? JSON.parse(readFileSync(statePath, "utf8")) : { starts: 0, commands: [], releases: [], acks: [] };
+  return { result, state, root };
+}
+
+function specsOf(state) {
+  return state.commands.filter((c) => c.command === "worker-start").map((c) => c.args[c.args.indexOf("--spec") + 1]);
 }
 
 test("payloadOf accepts object and JSON string payloads", () => {
@@ -205,4 +216,223 @@ test("a second proven no-start is not retried again", () => {
   assert.equal(state.starts, 2);
   assert.equal(state.releases.length, 2);
   assert.equal(state.maxActive, 1);
+});
+
+const SPEC = ["--mode", "spec", "--artifact", "docs/specs/guest.md"];
+
+test("omitting --mode behaves as code mode", () => {
+  const { result, state } = runScenario([{ disposition: "DONE" }, { disposition: "PASS" }]);
+  assert.equal(result.status, 0, result.stderr);
+  const [producer, reviewer] = specsOf(state);
+  assert.match(producer, /You are the implementation owner/);
+  assert.doesNotMatch(producer, /specification/);
+  assert.match(reviewer, /independent code reviewer/);
+  assert.doesNotMatch(result.stdout, /Suggested next step/);
+});
+
+test("spec mode creates a missing artifact and passes", () => {
+  const { result, state, root } = runScenario([
+    { disposition: "DONE", write: { path: "docs/specs/guest.md", content: "# Guest\n" } },
+    { disposition: "PASS" },
+  ], { args: SPEC });
+  assert.equal(result.status, 0, result.stderr);
+  const [producer, reviewer] = specsOf(state);
+  assert.match(producer, /You are the specification author/);
+  assert.match(producer, /does not exist yet: create it/);
+  assert.match(producer, /docs\/specs\/guest\.md/);
+  assert.match(reviewer, /independent specification reviewer/);
+  assert.match(reviewer, /Blocking findings:/);
+  assert.equal(readFileSync(join(root, "docs/specs/guest.md"), "utf8"), "# Guest\n");
+  assert.match(result.stdout, /Suggested next step:\n  orca-review-loop --mode code --task-file docs\/specs\/guest\.md/);
+  assert.match(result.stdout, /RESULT PASS/);
+});
+
+test("spec mode revises an existing artifact", () => {
+  const { result, state } = runScenario([
+    { disposition: "DONE", write: { path: "docs/specs/guest.md", content: "# Guest v2\n" } },
+    { disposition: "PASS" },
+  ], { args: SPEC, files: { "docs/specs/guest.md": "# Guest v1\n" } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(specsOf(state)[0], /already exists: revise it in place/);
+});
+
+test("spec mode forwards exact review feedback to a fresh revision", () => {
+  const body = "Blocking findings:\n- acceptance criteria untestable\nOptional suggestions:\n- none";
+  const { result, state } = runScenario([
+    { disposition: "DONE", write: { path: "docs/specs/guest.md", content: "v1\n" } },
+    { disposition: "NEEDS_FIX", body },
+    { disposition: "DONE", write: { path: "docs/specs/guest.md", content: "v2\n" } },
+    { disposition: "PASS" },
+  ], { args: SPEC });
+  assert.equal(result.status, 0, result.stderr);
+  const specs = specsOf(state);
+  assert.equal(specs.length, 4);
+  assert.match(specs[2], /revising an independently reviewed specification/);
+  assert.ok(specs[2].includes(`BEGIN REVIEW FEEDBACK\nSubject: NEEDS_FIX: test\nBody:\n${body}\nEND REVIEW FEEDBACK`));
+});
+
+for (const [name, args, pattern] of [
+  ["spec mode without --artifact fails early", ["--mode", "spec"], /requires --artifact/],
+  ["invalid --mode fails early", ["--mode", "plan"], /mode must be code or spec/],
+  ["artifact outside the worktree is rejected", ["--mode", "spec", "--artifact", "../outside.md"], /inside the target worktree/],
+]) {
+  test(name, () => {
+    const { result, state } = runScenario([], { args });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /RESULT PROTOCOL_ERROR/);
+    assert.match(result.stderr, pattern);
+    assert.equal(state.starts, 0);
+  });
+}
+
+test("spec reviewer editing the artifact is detected", () => {
+  const { result } = runScenario([
+    { disposition: "DONE", write: { path: "docs/specs/guest.md", content: "v1\n" } },
+    { disposition: "PASS", write: { path: "docs/specs/guest.md", content: "reviewer edit\n" } },
+  ], { args: SPEC });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /RESULT REVIEWER_MUTATED_WORKTREE/);
+});
+
+test("current resolves through a path selector and workers get the resolved worktree id", () => {
+  const { result, state, root } = runScenario([{ disposition: "DONE" }, { disposition: "PASS" }]);
+  assert.equal(result.status, 0, result.stderr);
+  const show = state.commands.find((c) => c.command === "worktree-show");
+  assert.equal(show.args[show.args.indexOf("--worktree") + 1], `path:${root}`);
+  for (const c of state.commands.filter((c) => c.command === "worker-start")) {
+    assert.equal(c.args[c.args.indexOf("--worktree") + 1], `id:fake-repo::${root}`);
+  }
+});
+
+test("a selector resolving to another worktree stops before any worker starts", () => {
+  const { result, state } = runScenario([{ disposition: "DONE" }], {
+    config: { worktree: "name:another-worktree" }, scenario: { resolveTo: "/tmp/some-other-repo" } });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /RESULT ORCA_ERROR: worktree selector name:another-worktree resolves to \/tmp\/some-other-repo/);
+  assert.equal(state.starts, 0);
+});
+
+test("a misplaced worker is stopped and released before ORCA_ERROR", () => {
+  const { result, state } = runScenario([{ disposition: "DONE" }], { scenario: { placeAt: "/tmp/some-other-repo" } });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /RESULT ORCA_ERROR: worker was placed in \/tmp\/some-other-repo.*was stopped and released/);
+  assert.equal(state.starts, 1);
+  assert.deepEqual(state.stops, ["ctx_1"]);
+  assert.deepEqual(state.releases, ["ctx_1"]);
+  assert.equal(state.active, 0);
+});
+
+test("config mode is the default and the CLI flag wins", () => {
+  const specConfig = { config: { mode: "spec" } };
+  const a = runScenario([], { ...specConfig });
+  assert.match(a.result.stderr, /requires --artifact/);
+  const b = runScenario([{ disposition: "DONE" }, { disposition: "PASS" }], { ...specConfig, args: ["--mode", "code"] });
+  assert.equal(b.result.status, 0, b.result.stderr);
+  assert.match(specsOf(b.state)[0], /implementation owner/);
+});
+
+test("code mode rejects --artifact", () => {
+  const { result, state } = runScenario([], { args: ["--artifact", "docs/x.md"] });
+  assert.match(result.stderr, /RESULT PROTOCOL_ERROR: --artifact is only valid with --mode spec/);
+  assert.equal(state.starts, 0);
+});
+
+test("artifact reached through a symlinked directory is rejected", () => {
+  const { result, state } = runScenario([], {
+    args: ["--mode", "spec", "--artifact", "linked/out.md"],
+    setup: (root) => { mkdirSync(join(dirname(root), "elsewhere")); symlinkSync(join(dirname(root), "elsewhere"), join(root, "linked")); },
+  });
+  assert.match(result.stderr, /RESULT PROTOCOL_ERROR: artifact must be inside the target worktree/);
+  assert.equal(state.starts, 0);
+});
+
+test("a symlink artifact is rejected", () => {
+  const { result } = runScenario([], {
+    args: SPEC,
+    setup: (root) => { mkdirSync(join(root, "docs/specs"), { recursive: true }); symlinkSync(join(root, "candidate.txt"), join(root, "docs/specs/guest.md")); },
+  });
+  assert.match(result.stderr, /artifact must not be a symbolic link/);
+});
+
+test("reviewer edits to a git-ignored artifact are still detected", () => {
+  const { result } = runScenario([
+    { disposition: "DONE", write: { path: "docs/specs/guest.md", content: "v1\n" } },
+    { disposition: "PASS", write: { path: "docs/specs/guest.md", content: "reviewer edit\n" } },
+  ], { args: SPEC, files: { ".gitignore": ".orca-loop/\ndocs/\n" } });
+  assert.match(result.stderr, /RESULT REVIEWER_MUTATED_WORKTREE/);
+});
+
+test("revisions to a git-ignored artifact count as progress", () => {
+  const body = "Blocking findings:\n- same";
+  const { result } = runScenario([
+    { disposition: "DONE", write: { path: "docs/specs/guest.md", content: "v1\n" } },
+    { disposition: "NEEDS_FIX", body },
+    { disposition: "DONE", write: { path: "docs/specs/guest.md", content: "v2\n" } },
+    { disposition: "NEEDS_FIX", body },
+    { disposition: "DONE", write: { path: "docs/specs/guest.md", content: "v3\n" } },
+    { disposition: "PASS" },
+  ], { args: SPEC, files: { ".gitignore": ".orca-loop/\ndocs/\n" } });
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test("producer DONE without delivering the artifact is a protocol error", () => {
+  const { result, state } = runScenario([{ disposition: "DONE" }], { args: SPEC });
+  assert.match(result.stderr, /RESULT PROTOCOL_ERROR: producer reported DONE but docs\/specs\/guest\.md is not a regular file/);
+  assert.equal(state.starts, 1);
+});
+
+test("suggested next command quotes paths with spaces", () => {
+  const { result } = runScenario([
+    { disposition: "DONE", write: { path: "docs/my specs/guest.md", content: "v1\n" } },
+    { disposition: "PASS" },
+  ], { args: ["--mode", "spec", "--artifact", "docs/my specs/guest.md"] });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /--task-file 'docs\/my specs\/guest\.md'/);
+});
+
+test("producer turning the artifact parent into an outside symlink is rejected", () => {
+  const { result, state } = runScenario([
+    { disposition: "DONE", symlinkParent: "docs/specs" },
+  ], { args: SPEC });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /RESULT PROTOCOL_ERROR: producer reported DONE but docs\/specs\/guest\.md is no longer valid: artifact must be inside the target worktree/);
+  assert.equal(state.starts, 1);
+});
+
+test("a misplaced worker that refuses to stop is reported as residual", () => {
+  const { result, state } = runScenario([{ disposition: "DONE" }], { scenario: { placeAt: "/tmp/some-other-repo", stopFails: true } });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /RESULT ORCA_ERROR: worker was placed in .*worker-stop failed, dispatch ctx_1 may still be running/);
+  assert.deepEqual(state.stops, ["ctx_1"]);
+  assert.deepEqual(state.releases, []);
+});
+
+test("a dot-prefixed artifact name inside the worktree is accepted", () => {
+  const { result } = runScenario([
+    { disposition: "DONE", write: { path: "docs/..draft.md", content: "v1\n" } },
+    { disposition: "PASS" },
+  ], { args: ["--mode", "spec", "--artifact", "docs/..draft.md"] });
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test("run_created records the resolved worktree", () => {
+  const { root } = runScenario([{ disposition: "DONE" }], { scenario: { placeAt: "/tmp/elsewhere" } });
+  const runDir = join(root, ".orca-loop", "run_test");
+  const events = readFileSync(join(runDir, "events.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  const created = events.find((e) => e.event === "run_created");
+  assert.equal(created.worktreePath, root);
+  assert.equal(created.worktreeId, `fake-repo::${root}`);
+  assert.equal(created.worktreeSelector, `path:${root}`);
+});
+
+test("a failed worker-start with a stray worktree id is still WORKER_FAILED", () => {
+  const { result, state } = runScenario([], { scenario: { startFailures: 1, placeAt: "/tmp/elsewhere" }, config: { maxLaunchRetries: 0 } });
+  assert.match(result.stderr, /RESULT WORKER_FAILED/);
+  assert.deepEqual(state.stops, []);
+});
+
+test("an artifact whose parent is a regular file fails with a clear error", () => {
+  const { result, state } = runScenario([], { args: ["--mode", "spec", "--artifact", "candidate.txt/guest.md"] });
+  assert.match(result.stderr, /RESULT PROTOCOL_ERROR: artifact path is not usable: ENOTDIR/);
+  assert.equal(state.starts, 0);
 });
