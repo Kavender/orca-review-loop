@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import {
   existsSync,
   lstatSync,
+  mkdtempSync,
   readFileSync,
   realpathSync,
   renameSync,
@@ -10,12 +11,16 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { createInterface } from "node:readline/promises";
-import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { ConfigError, DEFAULTS, mergeConfig, validateConfig } from "./config.mjs";
 
 const DEFAULT_CHOICE = "__orca_loop_default__";
 const MANUAL_CHOICE = "__orca_loop_manual__";
+const DISCOVERY_AGENTS = new Set(["claude", "codex"]);
+const CLAUDE_MODEL_EXCLUSIONS = new Set(["best", "default", "opusplan", "or a full model id"]);
+const CLAUDE_EFFORT_EXCLUSIONS = new Set(["auto", "ultracode"]);
 
 export function parseSetupArgs(argv) {
   const options = {};
@@ -66,11 +71,12 @@ export function parseClaudeDiscovery(modelReceipt, effortReceipt) {
   const effortMatch = effortText.match(/\/effort\s+<([^>]+)>/i);
   if (!modelMatch) throw new ConfigError("Claude model discovery returned no usable models");
   const models = unique(modelMatch[1].replace(/[.]\s*$/, "").split(","))
-    .filter((value) => !/^(default|or a full model id)$/i.test(value));
+    .filter((value) => !CLAUDE_MODEL_EXCLUSIONS.has(value.toLowerCase()));
   // Entries with their own argument syntax (for example `ultracode [on|off]`) are
   // slash-command controls, not values that can safely be passed to --effort.
   const effortExpression = effortMatch?.[1].replace(/\|?[^|\s]+\s+\[[^\]]+\].*$/, "") ?? "";
-  const efforts = unique(effortExpression.split("|"));
+  const efforts = unique(effortExpression.split("|"))
+    .filter((value) => !CLAUDE_EFFORT_EXCLUSIONS.has(value.toLowerCase()));
   if (models.length === 0) throw new ConfigError("Claude model discovery returned no usable models");
   return { models: models.map((id) => ({ id, efforts })), defaultEfforts: efforts };
 }
@@ -97,20 +103,24 @@ function probe(spawn, binary, args, timeoutMs, cwd) {
   });
 }
 
-export function discoverAgent(agent, { spawn = spawnSync, timeoutMs = 15_000, cwd } = {}) {
+export function discoverAgent(agent, { spawn = spawnSync, timeoutMs = 15_000, temporaryRoot = tmpdir() } = {}) {
+  if (!DISCOVERY_AGENTS.has(agent)) {
+    return { adapter: false, available: false, reason: `no model discovery adapter for agent ${agent}`, models: [], defaultEfforts: [] };
+  }
+  let discoveryDirectory;
   try {
+    discoveryDirectory = mkdtempSync(join(temporaryRoot, "orca-review-loop-discovery-"));
     if (agent === "claude") {
-      const models = parseProbeJson(probe(spawn, "claude", ["-p", "/model", "--output-format", "json"], timeoutMs, cwd), "Claude");
-      const efforts = parseProbeJson(probe(spawn, "claude", ["-p", "/effort", "--output-format", "json"], timeoutMs, cwd), "Claude");
-      return { available: true, ...parseClaudeDiscovery(models, efforts) };
+      const models = parseProbeJson(probe(spawn, "claude", ["-p", "/model", "--output-format", "json"], timeoutMs, discoveryDirectory), "Claude");
+      const efforts = parseProbeJson(probe(spawn, "claude", ["-p", "/effort", "--output-format", "json"], timeoutMs, discoveryDirectory), "Claude");
+      return { adapter: true, available: true, ...parseClaudeDiscovery(models, efforts) };
     }
-    if (agent === "codex") {
-      const models = parseProbeJson(probe(spawn, "codex", ["debug", "models"], timeoutMs, cwd), "Codex");
-      return { available: true, ...parseCodexDiscovery(models) };
-    }
-    return { available: false, reason: `no model discovery adapter for agent ${agent}`, models: [], defaultEfforts: [] };
+    const models = parseProbeJson(probe(spawn, "codex", ["debug", "models"], timeoutMs, discoveryDirectory), "Codex");
+    return { adapter: true, available: true, ...parseCodexDiscovery(models) };
   } catch (error) {
-    return { available: false, reason: error.message, models: [], defaultEfforts: [] };
+    return { adapter: true, available: false, reason: error.message, models: [], defaultEfforts: [] };
+  } finally {
+    if (discoveryDirectory) rmSync(discoveryDirectory, { recursive: true, force: true });
   }
 }
 
@@ -162,18 +172,35 @@ function choiceSet(values, current, kind) {
   return choices;
 }
 
+async function requiredManualText(prompt, label) {
+  for (;;) {
+    const value = (await prompt.text(label)).trim();
+    if (value) return value;
+    prompt.note(`${label} must not be empty; try again.`);
+  }
+}
+
 export async function configureRole(name, current, prompt, discoveryFn = discoverAgent) {
-  const agent = (await prompt.text(`${name} agent`, current.agent)).trim();
-  if (!agent) throw new ConfigError(`${name}.agent must be a non-empty string`);
-  const discovery = discoveryFn(agent);
-  if (!discovery.available) prompt.note(`  Discovery unavailable: ${discovery.reason}`);
+  let agent;
+  let discovery;
+  for (;;) {
+    agent = (await prompt.text(`${name} agent`, current.agent)).trim();
+    if (!agent) {
+      prompt.note(`${name} agent must not be empty; try again.`);
+      continue;
+    }
+    discovery = discoveryFn(agent);
+    if (!discovery.available) prompt.note(`  Discovery unavailable: ${discovery.reason}`);
+    const hasAdapter = discovery.adapter ?? DISCOVERY_AGENTS.has(agent);
+    if (hasAdapter || await prompt.confirm(`Agent ${agent} cannot be validated by setup. Use it anyway?`)) break;
+    prompt.note("Choose another agent.");
+  }
 
   const retainedModel = agent === current.agent ? current.model : null;
   const currentModel = retainedModel ?? DEFAULT_CHOICE;
   let model = await prompt.choose(`${name} model`, choiceSet(discovery.models.map((item) => item.id), retainedModel, "model ID"), currentModel);
-  if (model === MANUAL_CHOICE) model = (await prompt.text(`${name} model ID`)).trim();
+  if (model === MANUAL_CHOICE) model = await requiredManualText(prompt, `${name} model ID`);
   if (model === DEFAULT_CHOICE) model = null;
-  if (model === "") throw new ConfigError(`${name}.model must be null or a non-empty string`);
   if (model === null) return { agent, model: null, effort: null };
 
   const discoveredModel = discovery.models.find((item) => item.id === model);
@@ -181,11 +208,12 @@ export async function configureRole(name, current, prompt, discoveryFn = discove
   if (!discoveredModel && agent === "codex") {
     prompt.note("  This Codex model was not discovered; its effort values cannot be verified.");
   }
-  const currentEffort = current.model === model && current.effort ? current.effort : DEFAULT_CHOICE;
+  const currentEffort = agent === current.agent && current.model === model && current.effort
+    ? current.effort
+    : DEFAULT_CHOICE;
   let effort = await prompt.choose(`${name} thinking effort`, choiceSet(effortValues, currentEffort === DEFAULT_CHOICE ? null : currentEffort, "effort"), currentEffort);
-  if (effort === MANUAL_CHOICE) effort = (await prompt.text(`${name} effort`)).trim();
+  if (effort === MANUAL_CHOICE) effort = await requiredManualText(prompt, `${name} effort`);
   if (effort === DEFAULT_CHOICE) effort = null;
-  if (effort === "") throw new ConfigError(`${name}.effort must be null or a non-empty string`);
   return { agent, model, effort };
 }
 
@@ -249,7 +277,7 @@ export async function runSetup({ root, argv = [], input = process.stdin, output 
   const discoveryCache = new Map();
   const discover = (agent) => {
     if (!discoveryCache.has(agent)) {
-      discoveryCache.set(agent, discoveryFn ? discoveryFn(agent) : discoverAgent(agent, { cwd: root }));
+      discoveryCache.set(agent, discoveryFn ? discoveryFn(agent) : discoverAgent(agent));
     }
     return discoveryCache.get(agent);
   };

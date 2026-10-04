@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -22,7 +22,7 @@ class FakePrompt {
   constructor({ text = [], choices = [], confirmed = true } = {}) {
     this.textAnswers = [...text];
     this.choiceAnswers = [...choices];
-    this.confirmed = confirmed;
+    this.confirmations = Array.isArray(confirmed) ? [...confirmed] : [confirmed];
     this.notes = [];
     this.offers = [];
   }
@@ -41,12 +41,15 @@ class FakePrompt {
     return answer;
   }
 
-  async confirm() { return this.confirmed; }
+  async confirm(label) {
+    this.notes.push(`CONFIRM: ${label}`);
+    return this.confirmations.length > 1 ? this.confirmations.shift() : this.confirmations[0];
+  }
 }
 
 const discovery = (agent) => agent === "claude"
-  ? { available: true, models: [{ id: "sonnet", efforts: ["low", "high"] }], defaultEfforts: ["low", "high"] }
-  : { available: true, models: [{ id: "gpt-test", efforts: ["medium", "xhigh"] }], defaultEfforts: [] };
+  ? { adapter: true, available: true, models: [{ id: "sonnet", efforts: ["low", "high"] }], defaultEfforts: ["low", "high"] }
+  : { adapter: true, available: true, models: [{ id: "gpt-test", efforts: ["medium", "xhigh"] }], defaultEfforts: [] };
 
 function freshRoot() {
   return mkdtempSync(join(tmpdir(), "orca-loop-setup-"));
@@ -54,11 +57,11 @@ function freshRoot() {
 
 test("Claude discovery parses live choices without treating prose as a model", () => {
   const result = parseClaudeDiscovery(
-    { result: "Current model: Fable\nAvailable: sonnet, opus, default, or a full model ID." },
+    { result: "Current model: Fable\nAvailable: sonnet, opus, best, opusplan, default, or a full model ID." },
     { result: "Usage: /effort <low|medium|high|xhigh|max|auto|ultracode [on|off]>" },
   );
   assert.deepEqual(result.models.map((model) => model.id), ["sonnet", "opus"]);
-  assert.deepEqual(result.defaultEfforts, ["low", "medium", "high", "xhigh", "max", "auto"]);
+  assert.deepEqual(result.defaultEfforts, ["low", "medium", "high", "xhigh", "max"]);
 });
 
 test("Codex discovery filters hidden models and keeps effort per model", () => {
@@ -72,13 +75,33 @@ test("Codex discovery filters hidden models and keeps effort per model", () => {
 test("discovery reports a missing CLI as an unavailable catalogue", () => {
   const result = discoverAgent("claude", { spawn: () => ({ status: null, stdout: "", stderr: "", error: { code: "ENOENT" } }) });
   assert.equal(result.available, false);
+  assert.equal(result.adapter, true);
   assert.match(result.reason, /not installed/);
 });
 
 test("unknown agents have no discovery adapter", () => {
   const result = discoverAgent("custom-agent");
   assert.equal(result.available, false);
+  assert.equal(result.adapter, false);
   assert.match(result.reason, /no model discovery adapter/);
+});
+
+test("Claude probes run in one isolated temporary directory and clean it up", () => {
+  const temporaryRoot = freshRoot();
+  const calls = [];
+  const spawn = (binary, args, options) => {
+    calls.push({ binary, args, cwd: options.cwd });
+    const result = args.includes("/model")
+      ? "Available: sonnet, best, default, or a full model ID."
+      : "Usage: /effort <low|high|auto|ultracode [on|off]>";
+    return { status: 0, stdout: JSON.stringify({ is_error: false, result }), stderr: "" };
+  };
+  const result = discoverAgent("claude", { spawn, temporaryRoot });
+  assert.equal(result.available, true);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].cwd, calls[1].cwd);
+  assert.match(calls[0].cwd, /orca-review-loop-discovery-/);
+  assert.equal(existsSync(calls[0].cwd), false);
 });
 
 test("changing an agent resets the old agent's model default", async () => {
@@ -88,14 +111,43 @@ test("changing an agent resets the old agent's model default", async () => {
   assert.doesNotMatch(prompt.offers[0].choices.map((choice) => choice.label).join("\n"), /opus \(current\)/);
 });
 
+test("changing agent does not retain effort for an identically named model", async () => {
+  const prompt = new FakePrompt({ text: ["codex"], choices: ["shared-model"] });
+  const result = await configureRole("implement", { agent: "claude", model: "shared-model", effort: "high" }, prompt,
+    () => ({ adapter: true, available: true, models: [{ id: "shared-model", efforts: ["low"] }], defaultEfforts: [] }));
+  assert.deepEqual(result, { agent: "codex", model: "shared-model", effort: null });
+  assert.doesNotMatch(prompt.offers[1].choices.map((choice) => choice.label).join("\n"), /high \(current\)/);
+});
+
+test("an unrecognized agent requires confirmation and can be corrected", async () => {
+  const prompt = new FakePrompt({ text: ["codxe", "codex"], confirmed: [false, true] });
+  const result = await configureRole("review", { agent: "codex", model: null, effort: null }, prompt,
+    (agent) => agent === "codex" ? discovery(agent) : {
+      adapter: false, available: false, reason: "no adapter", models: [], defaultEfforts: [],
+    });
+  assert.deepEqual(result, { agent: "codex", model: null, effort: null });
+  assert.ok(prompt.notes.some((note) => note.includes("cannot be validated")));
+});
+
 test("manual opaque model and effort values remain available", async () => {
   const prompt = new FakePrompt({
     text: ["claude", "future-model", "future-effort"],
     choices: ["$manual", "$manual"],
   });
   const result = await configureRole("implement", { agent: "claude", model: null, effort: null }, prompt,
-    () => ({ available: false, reason: "probe failed", models: [], defaultEfforts: [] }));
+    () => ({ adapter: true, available: false, reason: "probe failed", models: [], defaultEfforts: [] }));
   assert.deepEqual(result, { agent: "claude", model: "future-model", effort: "future-effort" });
+});
+
+test("empty manual model and effort entries are re-prompted", async () => {
+  const prompt = new FakePrompt({
+    text: ["claude", "", "future-model", "", "future-effort"],
+    choices: ["$manual", "$manual"],
+  });
+  const result = await configureRole("implement", { agent: "claude", model: null, effort: null }, prompt,
+    () => ({ adapter: true, available: false, reason: "probe failed", models: [], defaultEfforts: [] }));
+  assert.deepEqual(result, { agent: "claude", model: "future-model", effort: "future-effort" });
+  assert.equal(prompt.notes.filter((note) => note.includes("must not be empty")).length, 2);
 });
 
 test("fresh setup writes minimal role configuration using agent defaults", async () => {

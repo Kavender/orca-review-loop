@@ -43,7 +43,7 @@ cd /path/to/project
 orca-review-loop setup
 ```
 
-Setup discovers the models currently offered by the installed Claude Code and Codex CLIs, then lets you choose the model and thinking effort independently for implementation and review. Codex effort choices are specific to the selected model. Choosing `default` stores `null` and leaves that setting to the agent; you can also enter an opaque model or effort value manually when using a newer or custom configuration.
+Setup discovers the models currently offered by the installed Claude Code and Codex CLIs, then lets you choose the model and thinking effort independently for implementation and review. Discovery runs from an isolated temporary directory and filters Claude session/router aliases that Orca cannot forward. Codex effort choices are specific to the selected model. Choosing `default` stores `null` and leaves that setting to the agent; you can also enter an opaque model or effort value manually when using a newer or custom configuration. An agent without a discovery adapter requires explicit confirmation before it is saved.
 
 Setup requires an interactive terminal. It previews the result before atomically creating or updating `.orca-loop.json`, preserves unrelated settings, and never launches an Orca worker. Use `orca-review-loop setup --config <path>` for another config file inside the target project.
 

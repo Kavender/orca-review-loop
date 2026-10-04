@@ -23,7 +23,7 @@ orca-review-loop setup
 
 It requires an interactive terminal. Setup asks for each role's agent, model, and thinking effort; shows a preview; and then creates or updates `.orca-loop.json`. It preserves unrelated top-level settings and never creates an Orca Run or worker. Pass `--config <path>` to update another config file inside the target project.
 
-For Claude, setup reads the live choices from the installed CLI's local `/model` and `/effort` commands. For Codex, it reads `codex debug models`, excludes hidden entries, and offers the reasoning levels declared by the selected model. A discovery failure is reported and falls back to `default` or manual opaque values. The package does not ship a model-name catalogue.
+For Claude, setup reads the live choices from the installed CLI's local `/model` and `/effort` commands and removes session/router aliases that cannot be forwarded through Orca. For Codex, it reads `codex debug models`, excludes hidden entries, and offers the reasoning levels declared by the selected model. Probes run from an isolated temporary directory so they do not load the target project's instructions, hooks, or MCP configuration. A discovery failure is reported and falls back to `default` or manual opaque values. An agent with no discovery adapter requires explicit confirmation. The package does not ship a model-name catalogue.
 
 Choosing `default` writes `null`. At runtime that means the corresponding flag is omitted and the agent's own configured default applies. An explicit effort requires an explicit model.
 
