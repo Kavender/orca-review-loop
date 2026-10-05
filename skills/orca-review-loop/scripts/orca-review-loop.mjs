@@ -705,6 +705,12 @@ function livenessState(row) {
   return live?.verdict ?? live?.state ?? live?.status ?? "unverifiable";
 }
 
+function defaultsNotice(config) {
+  const role = (r) => `${r.agent} (model: ${r.model ?? "agent default"}, effort: ${r.effort ?? "agent default"})`;
+  return `No .orca-loop.json found; using built-in defaults: implement ${role(config.implement)}, review ${role(config.review)}, maxRounds ${config.maxRounds}.\n`
+    + "Run `orca-review-loop setup` in an interactive terminal to choose each worker's model and thinking effort.\n";
+}
+
 export async function main(argv = process.argv.slice(2)) {
   let controller;
   try {
@@ -721,6 +727,7 @@ export async function main(argv = process.argv.slice(2)) {
     if (options.maxRounds !== undefined) config.maxRounds = options.maxRounds;
     if (options.mode !== undefined) config.mode = options.mode;
     validateConfig(config);
+    if (!existsSync(configPath)) process.stdout.write(defaultsNotice(config));
     if (config.mode === "spec" && !options.artifact) throw new LoopError("PROTOCOL_ERROR", "--mode spec requires --artifact <path>");
     if (config.mode === "code" && options.artifact) throw new LoopError("PROTOCOL_ERROR", "--artifact is only valid with --mode spec");
     // Like --task-file, --artifact is taken relative to the caller's cwd, then validated against ROOT.

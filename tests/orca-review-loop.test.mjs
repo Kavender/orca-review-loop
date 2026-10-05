@@ -28,7 +28,7 @@ function runScenario(completions, options = {}) {
   const scenarioPath = join(area, "scenario.json");
   const statePath = join(area, "state.json");
   writeFileSync(scenarioPath, JSON.stringify({ completions, ...options.scenario }));
-  writeFileSync(join(root, ".orca-loop.json"), JSON.stringify({
+  if (!options.noConfig) writeFileSync(join(root, ".orca-loop.json"), JSON.stringify({
     maxRounds: options.maxRounds || 5,
     waitTimeoutMs: 1,
     maxEmptyWaitsBeforeInspect: 1,
@@ -493,4 +493,15 @@ test("a pre-dispatch start rejection reports Orca's error instead of 'omitted li
   assert.doesNotMatch(result.stderr, /omitted lifecycle IDs/);
   assert.equal(state.starts, 1);
   assert.deepEqual(state.releases, []);
+});
+
+test("a run without .orca-loop.json announces the default workers and points to setup", () => {
+  const { result } = runScenario([], { noConfig: true, scenario: { preDispatchFailureAt: 1 } });
+  assert.match(result.stdout, /No \.orca-loop\.json found; using built-in defaults: implement claude \(model: agent default, effort: agent default\), review codex \(model: agent default, effort: agent default\), maxRounds 5\./);
+  assert.match(result.stdout, /orca-review-loop setup/);
+});
+
+test("a configured run stays quiet about defaults", () => {
+  const { result } = runScenario([{ disposition: "DONE" }, { disposition: "PASS" }]);
+  assert.doesNotMatch(result.stdout, /built-in defaults/);
 });

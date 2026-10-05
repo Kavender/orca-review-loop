@@ -78,7 +78,7 @@ After a spec-mode `PASS` the controller prints that suggested code-mode command.
 
 Defaults can be overridden with a `.orca-loop.json` in the target project root (see [`examples/orca-loop.config.json`](examples/orca-loop.config.json)). Runtime state lives under `.orca-loop/`, which you should add to the target project's `.gitignore`.
 
-An explicit `effort` requires an explicit `model`; invalid role configuration is rejected before the controller contacts Orca. Users who skip setup retain the built-in Claude/Codex defaults.
+An explicit `effort` requires an explicit `model`; invalid role configuration is rejected before the controller contacts Orca. Users who skip setup retain the built-in Claude/Codex defaults; a run with no config file prints the workers it is using and points to `orca-review-loop setup`.
 
 ## Codex Skill
 
