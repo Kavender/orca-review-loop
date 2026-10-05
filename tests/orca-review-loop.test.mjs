@@ -477,4 +477,20 @@ test("a blocked agent start reports Orca's reason and recovery command", () => {
 test("describeStartFailure degrades gracefully on a bare receipt", () => {
   assert.equal(describeStartFailure({}), "worker-start failed");
   assert.equal(describeStartFailure({ failedStage: "x", lastError: { message: "boom" } }), "worker-start failed at stage x: boom");
+  assert.equal(describeStartFailure({ ok: false, error: { code: "e", message: "m", data: { recovery: "do this" } } }), "worker-start failed (e): m. Recovery: do this");
+});
+
+test("recovery given as nextCommands is surfaced too", () => {
+  const { result } = runScenario([{ disposition: "DONE" }], { scenario: { blockedStartAt: 2, recoveryAsNextCommands: true } });
+  assert.match(result.stderr, /Recovery: orca orchestration worker-release --dispatch ctx_2 --json/);
+});
+
+test("a pre-dispatch start rejection reports Orca's error instead of 'omitted lifecycle IDs'", () => {
+  const { result, state } = runScenario([], { scenario: { preDispatchFailureAt: 1 } });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /RESULT WORKER_FAILED: worker-start failed \(consumer_fenced\): worker-start requires the coordinator terminal/);
+  assert.match(result.stderr, /Recovery: orca orchestration run-show --id run_test --json/);
+  assert.doesNotMatch(result.stderr, /omitted lifecycle IDs/);
+  assert.equal(state.starts, 1);
+  assert.deepEqual(state.releases, []);
 });

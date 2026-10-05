@@ -341,16 +341,24 @@ function shellQuote(value) {
 // Orca's start receipt carries the real reason and an exact recovery command; never reduce it to "failed".
 export function describeStartFailure(receipt) {
   const stage = findValue(receipt, ["failedStage", "failed_stage", "stage"]);
-  const reason = findValue(receipt, ["lastError", "last_error", "error"]);
-  const recovery = findValue(receipt, ["recovery"]);
+  const error = receipt?.error && typeof receipt.error === "object" ? receipt.error : null;
+  const reason = findValue(receipt, ["lastError", "last_error"]) ?? error?.message ?? (typeof receipt?.error === "string" ? receipt.error : null);
   const residual = findValue(receipt, ["residualResources", "residual_resources"]);
+  // Recovery guidance has appeared as a prose string (`recovery`), as an argv list (`nextCommands`),
+  // and nested under error.data; accept all of them.
+  const recoveryParts = [];
+  for (const value of [findValue(receipt, ["recovery"]), findValue(receipt, ["nextCommands", "next_commands"])]) {
+    if (typeof value === "string" && value.trim()) recoveryParts.push(value.trim());
+    else if (Array.isArray(value)) recoveryParts.push(...value.filter((v) => typeof v === "string" && v.trim()).map((v) => v.trim()));
+  }
   let message = "worker-start failed";
   if (stage) message += ` at stage ${stage}`;
+  if (error?.code) message += ` (${error.code})`;
   if (reason) message += `: ${typeof reason === "string" ? reason : reason.message ?? JSON.stringify(reason)}`;
   if (Array.isArray(residual) && residual.length > 0) {
     message += `. Residual resources: ${residual.map((r) => `${r.kind ?? "resource"} ${r.id ?? ""}`.trim()).join(", ")}`;
   }
-  if (typeof recovery === "string" && recovery.trim()) message += `. Recovery: ${recovery.trim()}`;
+  if (recoveryParts.length > 0) message += `. Recovery: ${recoveryParts.join("; ")}`;
   return message;
 }
 
@@ -467,6 +475,10 @@ class Controller {
       dispatchId: namedId(receipt, "dispatch"),
       terminalHandle: findValue(receipt, ["terminalHandle", "terminal_handle", "handle"]),
     };
+    if (response.status !== 0 && (!worker.taskId || !worker.dispatchId)) {
+      // Failed before a Dispatch existed (bad agent, fenced coordinator, ...): nothing to retry or reclaim.
+      throw new LoopError("WORKER_FAILED", describeStartFailure(receipt), { receipt, retryableNoStart: false });
+    }
     if (!worker.taskId || !worker.dispatchId) {
       throw new LoopError("ORCA_ERROR", "worker-start omitted lifecycle IDs", { receipt });
     }
