@@ -708,7 +708,7 @@ function livenessState(row) {
 function defaultsNotice(config) {
   const role = (r) => `${r.agent} (model: ${r.model ?? "agent default"}, effort: ${r.effort ?? "agent default"})`;
   return `No .orca-loop.json found; using built-in defaults: implement ${role(config.implement)}, review ${role(config.review)}, maxRounds ${config.maxRounds}.\n`
-    + "Run `orca-review-loop setup` in an interactive terminal to choose each worker's model and thinking effort.\n";
+    + "Run `orca-review-loop setup` in an interactive terminal to choose each worker's model and thinking effort, and the max review rounds.\n";
 }
 
 export async function main(argv = process.argv.slice(2)) {

@@ -29,14 +29,13 @@ Choosing `default` writes `null`. At runtime that means the corresponding flag i
 
 ```bash
 orca-review-loop \
-  --task "Fix the bug and add regression coverage" \
-  --max-rounds 5
+  --task "Fix the bug and add regression coverage"
 ```
 
 For a longer request:
 
 ```bash
-orca-review-loop --task-file ./request.md --max-rounds 5
+orca-review-loop --task-file ./request.md
 ```
 
 The worktree must be clean by default. `--allow-dirty` is an explicit override for a deliberately preserved baseline; the controller still checks that Codex did not mutate that baseline during review.

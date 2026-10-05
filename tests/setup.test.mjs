@@ -156,6 +156,7 @@ test("fresh setup writes minimal role configuration using agent defaults", async
   const result = await runSetup({ root, prompt, discoveryFn: discovery });
   assert.equal(result.configured, true);
   assert.deepEqual(JSON.parse(readFileSync(join(root, ".orca-loop.json"), "utf8")), {
+    maxRounds: 5,
     implement: { agent: "claude", model: null, effort: null },
     review: { agent: "codex", model: null, effort: null },
   });
@@ -246,4 +247,13 @@ test("setup fails clearly instead of hanging without a TTY", () => {
   });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /RESULT PROTOCOL_ERROR: setup requires an interactive terminal/);
+});
+
+test("setup stores max review rounds and re-asks on out-of-range input", async () => {
+  const root = freshRoot();
+  const prompt = new FakePrompt({ text: ["claude", "codex", "0", "abc", "3"] });
+  await runSetup({ root, prompt, discoveryFn: discovery });
+  assert.equal(JSON.parse(readFileSync(join(root, ".orca-loop.json"), "utf8")).maxRounds, 3);
+  assert.equal(prompt.notes.filter((n) => n === "Enter a whole number from 1 to 20.").length, 2);
+  assert.ok(prompt.notes.includes("  max review rounds: 3"));
 });
