@@ -199,7 +199,10 @@ export function discoverAgent(agent, { spawn = spawnSync, timeoutMs = 15_000, te
 
 const sgr = (code) => (text) => `\x1b[${code}m${text}\x1b[0m`;
 const STYLE = { bold: sgr(1), dim: sgr(2), accent: sgr("1;36"), chip: sgr("1;7;36") };
-const KEY = { up: ["\x1b[A", "k"], down: ["\x1b[B", "j"], enter: ["\r", "\n"], cancel: ["\x03", "\x1b"] };
+class SetupCancelled extends Error {}
+// Ctrl-C arrives as a keypress in raw mode; surface it as an interrupt (exit 130), not a cancel.
+export class SetupInterrupted extends Error {}
+const KEY = { up: ["\x1b[A", "k"], down: ["\x1b[B", "j"], enter: ["\r", "\n"], cancel: ["\x1b"], interrupt: ["\x03"] };
 
 export class TerminalPrompter {
   constructor(input = process.stdin, output = process.stdout) {
@@ -208,6 +211,7 @@ export class TerminalPrompter {
   }
 
   note(message = "") {
+    this.afterSummary = false;
     this.output.write(`${message}\n`);
   }
 
@@ -253,6 +257,7 @@ export class TerminalPrompter {
     const render = () => {
       erase();
       const lines = [];
+      if (this.afterSummary) lines.push("");
       if (header) lines.push(`${STYLE.chip(` ${header} `)}`, "");
       lines.push(STYLE.bold(label), "");
       choices.forEach((choice, i) => {
@@ -267,6 +272,7 @@ export class TerminalPrompter {
     const summarize = () => {
       erase();
       output.write(`${STYLE.dim("●")} ${label} ${STYLE.dim("→")} ${STYLE.bold(choices[index].label)}\n`);
+      this.afterSummary = true;
     };
     return new Promise((resolvePromise, reject) => {
       const wasRaw = input.isRaw;
@@ -278,7 +284,8 @@ export class TerminalPrompter {
       };
       const onData = (chunk) => {
         const key = chunk.toString();
-        if (KEY.cancel.includes(key)) return finish(() => reject(new ConfigError("setup cancelled")));
+        if (KEY.cancel.includes(key)) return finish(() => { erase(); reject(new SetupCancelled()); });
+        if (KEY.interrupt.includes(key)) return finish(() => reject(new SetupInterrupted("setup interrupted")));
         if (KEY.enter.includes(key)) return finish(() => { summarize(); resolvePromise(choices[index].value); });
         if (KEY.up.includes(key)) index = (index - 1 + choices.length) % choices.length;
         else if (KEY.down.includes(key)) index = (index + 1) % choices.length;
@@ -593,6 +600,10 @@ export async function runSetup({ root, argv = [], input = process.stdin, output 
     prompt.note(`Configured ${path}`);
     prompt.note('Next: orca-review-loop --task "<your task>"');
     return { configured: true, path, config: nextRaw };
+  } catch (error) {
+    if (!(error instanceof SetupCancelled)) throw error;
+    prompt.note("Setup cancelled; configuration was not changed.");
+    return { cancelled: true, path };
   } finally {
     if (!suppliedPrompt) prompt.close();
   }
