@@ -307,7 +307,7 @@ function choiceSet(values, current, kind) {
   const choices = [{ value: DEFAULT_CHOICE, label: "Default", description: "use the agent's configured default" }];
   for (const value of unique(values)) choices.push({ value, label: value });
   if (current && !choices.some((choice) => choice.value === current)) {
-    choices.push({ value: current, label: current, description: "current" });
+    choices.push({ value: current, label: current });
   }
   for (const choice of choices) {
     if (choice.value === current) choice.description = [choice.description, "current"].filter(Boolean).join(" · ");

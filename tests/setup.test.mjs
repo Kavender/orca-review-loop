@@ -166,6 +166,12 @@ test("agent choices list installed agents first and flag missing CLIs", async ()
   assert.match(choices.find((c) => c.value === "opencode").description, /uses its own model config/);
 });
 
+test("an undiscovered current model is marked current once", async () => {
+  const prompt = new FakePrompt();
+  await configureRole("implement", { agent: "claude", model: "legacy-model", effort: null }, prompt, discovery);
+  assert.equal(prompt.offers[1].choices.find((c) => c.value === "legacy-model").description, "current");
+});
+
 test("manual opaque model and effort values remain available", async () => {
   const prompt = new FakePrompt({
     text: ["future-model", "future-effort"],
