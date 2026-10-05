@@ -313,6 +313,24 @@ test("setup --set writes roles and maxRounds without prompting and validates the
   await assert.rejects(() => runSetup({ root, argv: ["--set", "maxRounds=99"], output: { write() {}, isTTY: false }, discoveryFn: discovery, catalogue: AGENT_CATALOGUE }), /maxRounds must be/);
 });
 
+test("--set is order-independent: explicit pins survive an agent change in the same command", () => {
+  const current = { maxRounds: 5, implement: { agent: "claude", model: "opus", effort: "high" }, review: { agent: "codex", model: null, effort: null } };
+  const forward = applySetArguments(current, ["implement.agent=codex", "implement.model=gpt-5", "implement.effort=max"], AGENT_CATALOGUE);
+  const reversed = applySetArguments(current, ["implement.model=gpt-5", "implement.effort=max", "implement.agent=codex"], AGENT_CATALOGUE);
+  assert.deepEqual(forward.implement, { agent: "codex", model: "gpt-5", effort: "max" });
+  assert.deepEqual(reversed.implement, forward.implement);
+});
+
+test("--set rejects a model pin for an own-config agent regardless of order", () => {
+  const current = { maxRounds: 5, implement: { agent: "claude", model: null, effort: null }, review: { agent: "codex", model: null, effort: null } };
+  for (const order of [["review.model=x", "review.agent=opencode"], ["review.agent=opencode", "review.model=x"]]) {
+    assert.throws(() => applySetArguments(current, order, AGENT_CATALOGUE), /does not accept --model or --effort; remove them/);
+  }
+  // Switching to an own-config agent without pins is fine and clears the old ones.
+  const ok = applySetArguments({ ...current, review: { agent: "codex", model: "gpt-5", effort: "high" } }, ["review.agent=opencode"], AGENT_CATALOGUE);
+  assert.deepEqual(ok.review, { agent: "opencode", model: null, effort: null });
+});
+
 test("--set changing an agent clears that role's model and effort", () => {
   const roles = applySetArguments({ maxRounds: 5, implement: { agent: "claude", model: "opus", effort: "high" }, review: { agent: "codex", model: null, effort: null } },
     ["implement.agent=codex"], AGENT_CATALOGUE);

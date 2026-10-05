@@ -432,9 +432,11 @@ function previewLines(path, implement, review, maxRounds) {
   ];
 }
 
-// `--set role.field=value` entries applied on top of the current roles.
+// `--set role.field=value` entries applied on top of the current roles. All assignments are
+// parsed first so the outcome does not depend on argument order: an agent change resets a role's
+// model/effort to default, then every explicit model/effort from the same command is applied.
 export function applySetArguments(current, assignments, catalogue) {
-  const roles = { implement: { ...current.implement }, review: { ...current.review } };
+  const pending = { implement: {}, review: {} };
   let maxRounds = current.maxRounds;
   for (const assignment of assignments) {
     const rounds = assignment.match(/^maxRounds=(.*)$/);
@@ -450,19 +452,31 @@ export function applySetArguments(current, assignments, catalogue) {
     const value = rawValue.trim();
     if (field === "agent") {
       if (!value) throw new ConfigError(`${role}.agent must not be empty`);
-      if (value !== roles[role].agent) roles[role] = { agent: value, model: null, effort: null };
+      pending[role].agent = value;
     } else {
-      roles[role][field] = value === "" || value.toLowerCase() === "default" || value.toLowerCase() === "null" ? null : value;
+      pending[role][field] = value === "" || value.toLowerCase() === "default" || value.toLowerCase() === "null" ? null : value;
     }
   }
+  const roles = {};
   for (const role of ["implement", "review"]) {
-    const capability = agentCapability(catalogue, roles[role].agent);
-    if (capability.supportsModel === false && (roles[role].model !== null || roles[role].effort !== null)) {
-      throw new ConfigError(`${role}.agent ${roles[role].agent} does not accept --model or --effort; set them to default`);
+    const next = { ...current[role] };
+    const changes = pending[role];
+    if (changes.agent !== undefined && changes.agent !== next.agent) {
+      next.agent = changes.agent;
+      next.model = null;
+      next.effort = null;
     }
-    if (roles[role].effort !== null && roles[role].model === null) {
+    if (changes.model !== undefined) next.model = changes.model;
+    if (changes.effort !== undefined) next.effort = changes.effort;
+    const capability = agentCapability(catalogue, next.agent);
+    const explicitPin = changes.model != null || changes.effort != null;
+    if (capability.supportsModel === false && (next.model !== null || next.effort !== null)) {
+      throw new ConfigError(`${role}.agent ${next.agent} does not accept --model or --effort; ${explicitPin ? "remove them or set them to default" : "set them to default"}`);
+    }
+    if (next.effort !== null && next.model === null) {
       throw new ConfigError(`${role}.effort requires ${role}.model`);
     }
+    roles[role] = next;
   }
   return { ...roles, maxRounds };
 }

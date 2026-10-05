@@ -25,22 +25,30 @@ succeeded. Do not invent models: offer only what discovery returned, plus "defau
 
 If `orca-review-loop` is not found, tell the user to `npm install -g orca-review-loop` and stop.
 
-## 2. Ask, one role at a time
+## 2. Ask, one dependent question at a time
 
-Use **one** `AskUserQuestion` call per role with up to three questions (agent, model, effort) so the
-user sees tabs for the role. Ask `implement` first, then `review`, then one question for max rounds.
+Each answer determines the next question's options, and `AskUserQuestion` builds all of a call's
+questions up front. So ask **sequentially**, one `AskUserQuestion` call per step, and derive each
+step's options from the previous answer. Do not bundle agent, model, and effort into one call.
 
-- **Agent**: list installed agents first; mark uninstalled ones "(CLI not on this machine)" but keep them
-  selectable, since the Orca worker server may differ. Pre-select the current agent.
-- **Model**: skip entirely when the chosen agent has `supportsModel: false` and say why in one line
-  ("<agent> launches with the model from its own config"). Otherwise options are: `default` (agent's
-  own setting), each discovered model id, and "Other" for a manual id. Pre-select the current model.
-- **Effort**: ask only when a model was chosen. Options are the discovered efforts for that model
-  (`efforts`, or `defaultEfforts` if the model is manual) plus `default`. An effort without a model is
-  invalid; the CLI will reject it.
-- **Max review rounds**: integer 1-20, default to `current.maxRounds`.
+For `implement`, then for `review`:
 
-If the user's agent isn't in the list, let them type an id and warn once that setup cannot validate it.
+1. **Agent** — one question. List installed agents first; mark uninstalled ones "(CLI not on this
+   machine)" but keep them selectable, since the Orca worker server may differ. Pre-select the current
+   agent. If the user picks "Other" and types an id that discovery does not know, warn once that setup
+   cannot validate it.
+2. **Model** — only after the agent is known, and only if that agent's `supportsModel` is not
+   `false`. If it is `false`, skip with one line ("<agent> launches with the model from its own
+   config") and go to the next role. Otherwise the options are `default` (agent's own setting), each
+   id in *that agent's* `discovery.models`, and "Other" for a manual id. Pre-select the current model
+   only if the agent did not change.
+3. **Effort** — only after an explicit (non-default) model is chosen. Options are that model's
+   `efforts`, or the agent's `defaultEfforts` for a manual id, plus `default`. If the model is
+   `default`, do not ask; effort must also be default.
+
+Then one final question for **max review rounds** (integer 1-20, default `current.maxRounds`).
+
+Never reuse a previous agent's model list or a previous model's effort list.
 
 ## 3. Preview and write
 
