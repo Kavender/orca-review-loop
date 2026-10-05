@@ -1,6 +1,6 @@
 {
   "name": "orca-review-loop",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Deterministic Claude produce / Codex review loop for Orca, for code changes or specification documents",
   "type": "module",
   "bin": {
