@@ -42,7 +42,7 @@ class FakePrompt {
     this.offers.push({ label, choices, defaultValue });
     if (!this.choiceAnswers.length) return defaultValue;
     const answer = this.choiceAnswers.shift();
-    if (answer === "$manual") return choices.find((choice) => choice.label.startsWith("enter ")).value;
+    if (answer === "$manual") return choices.find((choice) => choice.label === "Type something.").value;
     return answer;
   }
 
@@ -159,10 +159,17 @@ test("agent choices list installed agents first and flag missing CLIs", async ()
   const catalogue = buildAgentCatalogue({ orcaHelp: "", which: (b) => (b === "codex" ? "/bin/codex" : null) });
   const prompt = new FakePrompt();
   await configureRole("implement", { agent: "codex", model: null, effort: null }, prompt, discovery, catalogue);
-  const labels = prompt.offers[0].choices.map((c) => c.label);
-  assert.match(labels[0], /^Codex \(codex\)$/);
-  assert.match(labels.find((l) => l.startsWith("Claude Code")), /CLI not found on PATH/);
-  assert.match(labels.find((l) => l.startsWith("OpenCode ")), /uses its own model config/);
+  const { choices } = prompt.offers[0];
+  assert.equal(choices[0].label, "Codex");
+  assert.equal(choices[0].description, "codex · current");
+  assert.match(choices.find((c) => c.value === "claude").description, /CLI not found on PATH/);
+  assert.match(choices.find((c) => c.value === "opencode").description, /uses its own model config/);
+});
+
+test("an undiscovered current model is marked current once", async () => {
+  const prompt = new FakePrompt();
+  await configureRole("implement", { agent: "claude", model: "legacy-model", effort: null }, prompt, discovery);
+  assert.equal(prompt.offers[1].choices.find((c) => c.value === "legacy-model").description, "current");
 });
 
 test("manual opaque model and effort values remain available", async () => {
@@ -353,6 +360,7 @@ test("arrow-key selection moves, jumps by digit, confirms with Enter, and cancel
   assert.equal(await pending, "b");
   assert.equal(input.isRaw, false);
   assert.match(out.join(""), /❯ 2\. B/);
+  assert.match(out.join(""), /●.*pick.*→.*B/);
   const second = prompter.choose("pick", choices, "a");
   input.emit("data", Buffer.from("3"));
   input.emit("data", Buffer.from("\n"));
