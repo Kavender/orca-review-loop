@@ -6,8 +6,13 @@ import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
+  AGENT_CATALOGUE,
+  applySetArguments,
+  buildAgentCatalogue,
   configureRole,
   discoverAgent,
+  parseOrcaAgentIds,
+  TerminalPrompter,
   parseClaudeDiscovery,
   parseCodexDiscovery,
   parseSetupArgs,
@@ -37,7 +42,7 @@ class FakePrompt {
     this.offers.push({ label, choices, defaultValue });
     if (!this.choiceAnswers.length) return defaultValue;
     const answer = this.choiceAnswers.shift();
-    if (answer === "$manual") return choices.find((choice) => choice.label.startsWith("enter a ")).value;
+    if (answer === "$manual") return choices.find((choice) => choice.label.startsWith("enter ")).value;
     return answer;
   }
 
@@ -50,6 +55,8 @@ class FakePrompt {
 const discovery = (agent) => agent === "claude"
   ? { adapter: true, available: true, models: [{ id: "sonnet", efforts: ["low", "high"] }], defaultEfforts: ["low", "high"] }
   : { adapter: true, available: true, models: [{ id: "gpt-test", efforts: ["medium", "xhigh"] }], defaultEfforts: [] };
+
+const DEFAULT = "__orca_loop_default__";
 
 function freshRoot() {
   return mkdtempSync(join(tmpdir(), "orca-loop-setup-"));
@@ -105,34 +112,63 @@ test("Claude probes run in one isolated temporary directory and clean it up", ()
 });
 
 test("changing an agent resets the old agent's model default", async () => {
-  const prompt = new FakePrompt({ text: ["codex"] });
+  const prompt = new FakePrompt({ choices: ["codex"] });
   const result = await configureRole("implement", { agent: "claude", model: "opus", effort: "high" }, prompt, discovery);
   assert.deepEqual(result, { agent: "codex", model: null, effort: null });
-  assert.doesNotMatch(prompt.offers[0].choices.map((choice) => choice.label).join("\n"), /opus \(current\)/);
+  assert.doesNotMatch(prompt.offers[1].choices.map((choice) => choice.label).join("\n"), /opus \(current\)/);
 });
 
 test("changing agent does not retain effort for an identically named model", async () => {
-  const prompt = new FakePrompt({ text: ["codex"], choices: ["shared-model"] });
+  const prompt = new FakePrompt({ choices: ["codex", "shared-model"] });
   const result = await configureRole("implement", { agent: "claude", model: "shared-model", effort: "high" }, prompt,
     () => ({ adapter: true, available: true, models: [{ id: "shared-model", efforts: ["low"] }], defaultEfforts: [] }));
   assert.deepEqual(result, { agent: "codex", model: "shared-model", effort: null });
-  assert.doesNotMatch(prompt.offers[1].choices.map((choice) => choice.label).join("\n"), /high \(current\)/);
+  assert.doesNotMatch(prompt.offers[2].choices.map((choice) => choice.label).join("\n"), /high \(current\)/);
 });
 
 test("an unrecognized agent requires confirmation and can be corrected", async () => {
-  const prompt = new FakePrompt({ text: ["codxe", "codex"], confirmed: [false, true] });
-  const result = await configureRole("review", { agent: "codex", model: null, effort: null }, prompt,
-    (agent) => agent === "codex" ? discovery(agent) : {
-      adapter: false, available: false, reason: "no adapter", models: [], defaultEfforts: [],
-    });
+  const prompt = new FakePrompt({ choices: ["$manual", "codex"], text: ["codxe"], confirmed: [false, true] });
+  const result = await configureRole("review", { agent: "codex", model: null, effort: null }, prompt, discovery);
   assert.deepEqual(result, { agent: "codex", model: null, effort: null });
   assert.ok(prompt.notes.some((note) => note.includes("cannot be validated")));
 });
 
+test("an unknown agent id is accepted after confirmation", async () => {
+  const prompt = new FakePrompt({ choices: ["$manual"], text: ["kiro"], confirmed: true });
+  const result = await configureRole("review", { agent: "codex", model: null, effort: null }, prompt,
+    (agent) => (agent === "kiro" ? discoverAgent(agent) : discovery(agent)));
+  assert.deepEqual(result, { agent: "kiro", model: null, effort: null });
+  assert.ok(prompt.notes.some((note) => note.includes("No live model discovery")));
+});
+
+test("agents that run on their own model config skip model and effort", async () => {
+  const prompt = new FakePrompt({ choices: ["opencode"] });
+  const result = await configureRole("implement", { agent: "claude", model: "opus", effort: "high" }, prompt, discovery);
+  assert.deepEqual(result, { agent: "opencode", model: null, effort: null });
+  assert.equal(prompt.offers.length, 1);
+  assert.ok(prompt.notes.some((note) => note.includes("does not accept --model")));
+});
+
+test("choosing the default model explains that effort follows it", async () => {
+  const prompt = new FakePrompt();
+  await configureRole("implement", { agent: "claude", model: null, effort: null }, prompt, discovery);
+  assert.ok(prompt.notes.some((note) => note.includes("thinking effort: default")));
+});
+
+test("agent choices list installed agents first and flag missing CLIs", async () => {
+  const catalogue = buildAgentCatalogue({ orcaHelp: "", which: (b) => (b === "codex" ? "/bin/codex" : null) });
+  const prompt = new FakePrompt();
+  await configureRole("implement", { agent: "codex", model: null, effort: null }, prompt, discovery, catalogue);
+  const labels = prompt.offers[0].choices.map((c) => c.label);
+  assert.match(labels[0], /^Codex \(codex\)$/);
+  assert.match(labels.find((l) => l.startsWith("Claude Code")), /CLI not found on PATH/);
+  assert.match(labels.find((l) => l.startsWith("OpenCode ")), /uses its own model config/);
+});
+
 test("manual opaque model and effort values remain available", async () => {
   const prompt = new FakePrompt({
-    text: ["claude", "future-model", "future-effort"],
-    choices: ["$manual", "$manual"],
+    text: ["future-model", "future-effort"],
+    choices: ["claude", "$manual", "$manual"],
   });
   const result = await configureRole("implement", { agent: "claude", model: null, effort: null }, prompt,
     () => ({ adapter: true, available: false, reason: "probe failed", models: [], defaultEfforts: [] }));
@@ -141,8 +177,8 @@ test("manual opaque model and effort values remain available", async () => {
 
 test("empty manual model and effort entries are re-prompted", async () => {
   const prompt = new FakePrompt({
-    text: ["claude", "", "future-model", "", "future-effort"],
-    choices: ["$manual", "$manual"],
+    text: ["", "future-model", "", "future-effort"],
+    choices: ["claude", "$manual", "$manual"],
   });
   const result = await configureRole("implement", { agent: "claude", model: null, effort: null }, prompt,
     () => ({ adapter: true, available: false, reason: "probe failed", models: [], defaultEfforts: [] }));
@@ -165,7 +201,7 @@ test("fresh setup writes minimal role configuration using agent defaults", async
 test("setup probes the same selected agent only once", async () => {
   const root = freshRoot();
   let calls = 0;
-  const prompt = new FakePrompt({ text: ["claude", "claude"] });
+  const prompt = new FakePrompt({ choices: ["claude", DEFAULT, "claude", DEFAULT] });
   await runSetup({
     root,
     prompt,
@@ -182,7 +218,7 @@ test("setup writes explicit model pins and preserves unrelated settings", async 
   writeFileSync(join(root, ".orca-loop.json"), `${JSON.stringify({
     mode: "spec", maxRounds: 7, retainTerminals: true, implement: { futureOption: true },
   })}\n`);
-  const prompt = new FakePrompt({ choices: ["sonnet", "high", "gpt-test", "xhigh"] });
+  const prompt = new FakePrompt({ choices: ["claude", "sonnet", "high", "codex", "gpt-test", "xhigh"] });
   await runSetup({ root, prompt, discoveryFn: discovery });
   assert.deepEqual(JSON.parse(readFileSync(join(root, ".orca-loop.json"), "utf8")), {
     mode: "spec",
@@ -222,9 +258,90 @@ test("setup refuses a symlink config destination", async () => {
   assert.equal(readFileSync(target, "utf8"), "{}\n");
 });
 
-test("setup argument parser accepts only config and help", () => {
-  assert.deepEqual(parseSetupArgs(["--config", "config.json"]), { config: "config.json" });
+test("setup argument parser accepts config, discover, set, json and help", () => {
+  assert.deepEqual(parseSetupArgs(["--config", "config.json"]), { config: "config.json", set: [] });
+  assert.deepEqual(parseSetupArgs(["--discover", "--json"]), { discover: true, json: true, set: [] });
+  assert.deepEqual(parseSetupArgs(["--set", "a=b", "--set", "c=d"]).set, ["a=b", "c=d"]);
   assert.throws(() => parseSetupArgs(["--task", "x"]), /unknown setup argument/);
+  assert.throws(() => parseSetupArgs(["--discover", "--set", "a=b"]), /cannot be combined/);
+});
+
+test("Orca agent ids are parsed from worker-start help and merged into the catalogue", () => {
+  const help = "--agent takes an Orca agent id enabled on the worker server, such as claude, codex, cursor, antigravity, muse, zcode, opencode, or opencode2.\n--model supports ...";
+  assert.deepEqual(parseOrcaAgentIds(help), ["claude", "codex", "cursor", "antigravity", "muse", "zcode", "opencode", "opencode2"]);
+  const catalogue = buildAgentCatalogue({ orcaHelp: help.replace("opencode2", "opencode2, or futureagent"), which: () => null });
+  const future = catalogue.find((a) => a.id === "futureagent");
+  assert.deepEqual(future, { id: "futureagent", label: "futureagent", binaries: ["futureagent"], supportsModel: null, source: "orca", installed: false });
+  assert.equal(catalogue.find((a) => a.id === "claude").source, "orca");
+  assert.equal(parseOrcaAgentIds("no agent sentence here").length, 0);
+  assert.equal(buildAgentCatalogue({ orcaHelp: "", which: () => null }).length, AGENT_CATALOGUE.length);
+});
+
+test("setup --discover --json reports agents, discovery and current config", async () => {
+  const root = freshRoot();
+  const out = [];
+  const catalogue = buildAgentCatalogue({ orcaHelp: "", which: (b) => (b === "claude" ? "/bin/claude" : null) });
+  const result = await runSetup({ root, argv: ["--discover", "--json"], output: { write: (s) => out.push(s), isTTY: false }, discoveryFn: discovery, catalogue });
+  assert.equal(result.discovered, true);
+  const report = JSON.parse(out.join(""));
+  assert.equal(report.exists, false);
+  assert.equal(report.current.maxRounds, 5);
+  const claude = report.agents.find((a) => a.id === "claude");
+  assert.equal(claude.installed, true);
+  assert.deepEqual(claude.discovery.models.map((m) => m.id), ["sonnet"]);
+  const codex = report.agents.find((a) => a.id === "codex");
+  assert.equal(codex.discovery.available, false);
+  assert.match(codex.discovery.reason, /not found on PATH/);
+  assert.equal(report.agents.find((a) => a.id === "opencode").supportsModel, false);
+});
+
+test("setup --set writes roles and maxRounds without prompting and validates them", async () => {
+  const root = freshRoot();
+  writeFileSync(join(root, ".orca-loop.json"), JSON.stringify({ retainTerminals: true, implement: { agent: "claude", model: "opus", effort: "high" } }));
+  const out = [];
+  await runSetup({ root, argv: ["--set", "implement.model=sonnet", "--set", "review.agent=cursor", "--set", "review.model=grok-4", "--set", "maxRounds=3"],
+    output: { write: (s) => out.push(s), isTTY: false }, discoveryFn: discovery, catalogue: AGENT_CATALOGUE });
+  const written = JSON.parse(readFileSync(join(root, ".orca-loop.json"), "utf8"));
+  assert.deepEqual(written, { retainTerminals: true, maxRounds: 3,
+    implement: { agent: "claude", model: "sonnet", effort: "high" }, review: { agent: "cursor", model: "grok-4", effort: null } });
+  assert.match(out.join(""), /Configured /);
+  await assert.rejects(() => runSetup({ root, argv: ["--set", "review.agent=opencode", "--set", "review.model=x"], output: { write() {}, isTTY: false }, discoveryFn: discovery, catalogue: AGENT_CATALOGUE }),
+    /does not accept --model/);
+  await assert.rejects(() => runSetup({ root, argv: ["--set", "implement.effort=high", "--set", "implement.model=default"], output: { write() {}, isTTY: false }, discoveryFn: discovery, catalogue: AGENT_CATALOGUE }),
+    /effort requires implement.model/);
+  await assert.rejects(() => runSetup({ root, argv: ["--set", "bogus=1"], output: { write() {}, isTTY: false }, discoveryFn: discovery, catalogue: AGENT_CATALOGUE }), /invalid --set/);
+  await assert.rejects(() => runSetup({ root, argv: ["--set", "maxRounds=99"], output: { write() {}, isTTY: false }, discoveryFn: discovery, catalogue: AGENT_CATALOGUE }), /maxRounds must be/);
+});
+
+test("--set changing an agent clears that role's model and effort", () => {
+  const roles = applySetArguments({ maxRounds: 5, implement: { agent: "claude", model: "opus", effort: "high" }, review: { agent: "codex", model: null, effort: null } },
+    ["implement.agent=codex"], AGENT_CATALOGUE);
+  assert.deepEqual(roles.implement, { agent: "codex", model: null, effort: null });
+});
+
+test("arrow-key selection moves, jumps by digit, confirms with Enter, and cancels with Esc", async () => {
+  const { EventEmitter } = await import("node:events");
+  const makeInput = () => Object.assign(new EventEmitter(), { isTTY: true, isRaw: false, setRawMode(v) { this.isRaw = v; }, resume() {}, pause() {} });
+  const out = [];
+  const output = { isTTY: true, write: (s) => out.push(s) };
+  const input = makeInput();
+  const prompter = new TerminalPrompter(input, output);
+  const choices = [{ value: "a", label: "A" }, { value: "b", label: "B" }, { value: "c", label: "C" }];
+  const pending = prompter.choose("pick", choices, "a");
+  input.emit("data", Buffer.from("\x1b[B"));
+  input.emit("data", Buffer.from("\x1b[B"));
+  input.emit("data", Buffer.from("\x1b[A"));
+  input.emit("data", Buffer.from("\r"));
+  assert.equal(await pending, "b");
+  assert.equal(input.isRaw, false);
+  assert.match(out.join(""), /❯ 2\. B/);
+  const second = prompter.choose("pick", choices, "a");
+  input.emit("data", Buffer.from("3"));
+  input.emit("data", Buffer.from("\n"));
+  assert.equal(await second, "c");
+  const third = prompter.choose("pick", choices, "a");
+  input.emit("data", Buffer.from("\x1b"));
+  await assert.rejects(third, /setup cancelled/);
 });
 
 test("setup help works without a TTY and documents the command", () => {
@@ -251,7 +368,7 @@ test("setup fails clearly instead of hanging without a TTY", () => {
 
 test("setup stores max review rounds and re-asks on out-of-range input", async () => {
   const root = freshRoot();
-  const prompt = new FakePrompt({ text: ["claude", "codex", "0", "abc", "3"] });
+  const prompt = new FakePrompt({ text: ["0", "abc", "3"] });
   await runSetup({ root, prompt, discoveryFn: discovery });
   assert.equal(JSON.parse(readFileSync(join(root, ".orca-loop.json"), "utf8")).maxRounds, 3);
   assert.equal(prompt.notes.filter((n) => n === "Enter a whole number from 1 to 20.").length, 2);

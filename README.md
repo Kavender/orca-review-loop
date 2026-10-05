@@ -45,7 +45,24 @@ orca-review-loop setup
 
 Setup discovers the models currently offered by the installed Claude Code and Codex CLIs, then lets you choose the model and thinking effort independently for implementation and review, plus the maximum number of review rounds (default 5; each round costs one implement and one review turn). Discovery runs from an isolated temporary directory and filters Claude session/router aliases that Orca cannot forward. Codex effort choices are specific to the selected model. Choosing `default` stores `null` and leaves that setting to the agent; you can also enter an opaque model or effort value manually when using a newer or custom configuration. An agent without a discovery adapter requires explicit confirmation before it is saved.
 
-Setup requires an interactive terminal. It previews the result before atomically creating or updating `.orca-loop.json`, preserves unrelated settings, and never launches an Orca worker. Use `orca-review-loop setup --config <path>` for another config file inside the target project.
+In a terminal, setup is an arrow-key picker (number keys also work). Inside a Claude Code session, use the bundled skill instead so choices are presented with Claude Code's own question UI:
+
+```bash
+ln -s "$(npm root -g)/orca-review-loop/skills/orca-review-loop-setup" ~/.claude/skills/orca-review-loop-setup
+# then in Claude Code: /orca-review-loop-setup
+```
+
+The skill and any script can use the non-interactive forms:
+
+```bash
+orca-review-loop setup --discover --json     # agents Orca knows, which CLIs are installed, live models/efforts, current config
+orca-review-loop setup --set implement.agent=claude --set implement.model=opus --set implement.effort=high \
+                       --set review.agent=codex --set maxRounds=5
+```
+
+Agents are not limited to Claude and Codex. Setup lists every agent id the installed Orca CLI advertises (claude, codex, cursor, antigravity, muse, opencode, zcode, ...) and accepts any other id you type; model and effort are only offered for agents Orca lets you launch with `--model`. Live model discovery currently exists for Claude Code and Codex; other agents take a manual model id or `default`.
+
+Interactive setup requires a terminal. It previews the result before atomically creating or updating `.orca-loop.json`, preserves unrelated settings, and never launches an Orca worker. Use `orca-review-loop setup --config <path>` for another config file inside the target project.
 
 Run it from any target repository:
 
