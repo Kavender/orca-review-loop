@@ -225,6 +225,26 @@ test("closeTakenOverTerminals closes only taken-over terminals, also on failure 
   assert.match(blocked.result.stderr, /RESULT BLOCKED/);
 });
 
+test("retainTerminals wins over closeTakenOverTerminals: nothing is swept", () => {
+  const { result, state } = runScenario([{ disposition: "DONE" }, { disposition: "PASS" }],
+    { scenario: { takenOver: ["ctx_1", "ctx_2"] }, config: { retainTerminals: true, closeTakenOverTerminals: true } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(state.closes, []);
+  assert.doesNotMatch(result.stdout, /NOTE|Closed/);
+  assert.equal(state.commands.filter((c) => c.command === "worker-retain").length, 2);
+});
+
+test("terminal flags must be booleans, so a string \"false\" cannot enable closing", () => {
+  for (const flag of ["closeTakenOverTerminals", "retainTerminals", "logBodies"]) {
+    const { result, state } = runScenario([{ disposition: "DONE" }, { disposition: "PASS" }],
+      { scenario: { takenOver: ["ctx_1"] }, config: { [flag]: "false" } });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, new RegExp(`${flag} must be true or false`));
+    assert.equal(state.starts, 0);
+    assert.deepEqual(state.closes ?? [], []);
+  }
+});
+
 test("no taken-over terminals means no note and no close", () => {
   const { result, state } = runScenario([{ disposition: "DONE" }, { disposition: "PASS" }], { config: { closeTakenOverTerminals: true } });
   assert.equal(result.status, 0, result.stderr);

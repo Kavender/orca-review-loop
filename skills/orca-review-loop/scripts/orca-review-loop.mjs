@@ -641,7 +641,8 @@ class Controller {
   // so worker-release leaves it open. Report those at the end, or close them when configured.
   // Never throws: this runs on every exit path and must not mask the loop's own result.
   sweepTakenOverTerminals(write) {
-    if (!this.runId) return;
+    // retainTerminals keeps every worker terminal on purpose; none of them are leftovers.
+    if (!this.runId || this.config.retainTerminals) return;
     try {
       const list = this.orca(["orchestration", "worker-list", "--run", this.runId], { allowFailure: true, timeoutMs: 30_000 });
       const rows = [];
