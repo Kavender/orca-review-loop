@@ -40,7 +40,7 @@ export function parseSetupArgs(argv) {
 
 export function setupUsage() {
   return "Usage: orca-review-loop setup [--config <path>]\n\n" +
-    "Interactively configure the implement and review agents, models, and thinking effort.\n";
+    "Interactively configure the implement and review agents, models, thinking effort, and max review rounds.\n";
 }
 
 function parseProbeJson(result, label) {
@@ -217,6 +217,15 @@ export async function configureRole(name, current, prompt, discoveryFn = discove
   return { agent, model, effort };
 }
 
+export async function chooseMaxRounds(current, prompt) {
+  for (;;) {
+    const answer = (await prompt.text("Max review rounds (1-20; each round is one implement + one review turn)", String(current))).trim();
+    const value = Number(answer);
+    if (Number.isInteger(value) && value >= 1 && value <= 20) return value;
+    prompt.note("Enter a whole number from 1 to 20.");
+  }
+}
+
 function safeConfigPath(root, configured) {
   const path = isAbsolute(configured) ? resolve(configured) : resolve(root, configured);
   const realRoot = realpathSync(root);
@@ -286,8 +295,11 @@ export async function runSetup({ root, argv = [], input = process.stdin, output 
     const implement = await configureRole("implement", current.implement, prompt, discover);
     prompt.note();
     const review = await configureRole("review", current.review, prompt, discover);
+    prompt.note();
+    const maxRounds = await chooseMaxRounds(current.maxRounds, prompt);
     const nextRaw = {
       ...raw,
+      maxRounds,
       implement: { ...(raw.implement ?? {}), ...implement },
       review: { ...(raw.review ?? {}), ...review },
     };
@@ -296,6 +308,7 @@ export async function runSetup({ root, argv = [], input = process.stdin, output 
     prompt.note("  Role       Agent       Model       Effort");
     prompt.note(`  implement  ${implement.agent}  ${displayValue(implement.model)}  ${displayValue(implement.effort)}`);
     prompt.note(`  review     ${review.agent}  ${displayValue(review.model)}  ${displayValue(review.effort)}`);
+    prompt.note(`  max review rounds: ${maxRounds}`);
     if (!await prompt.confirm(`Write ${path}?`)) {
       prompt.note("Setup cancelled; configuration was not changed.");
       return { cancelled: true, path };

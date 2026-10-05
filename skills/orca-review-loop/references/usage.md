@@ -29,14 +29,13 @@ Choosing `default` writes `null`. At runtime that means the corresponding flag i
 
 ```bash
 orca-review-loop \
-  --task "Fix the bug and add regression coverage" \
-  --max-rounds 5
+  --task "Fix the bug and add regression coverage"
 ```
 
 For a longer request:
 
 ```bash
-orca-review-loop --task-file ./request.md --max-rounds 5
+orca-review-loop --task-file ./request.md
 ```
 
 The worktree must be clean by default. `--allow-dirty` is an explicit override for a deliberately preserved baseline; the controller still checks that Codex did not mutate that baseline during review.
@@ -126,6 +125,15 @@ The controller never commits, merges, pushes, force-pushes, resets, cleans, or s
 One launch retry is allowed only when `worker-start` itself fails and its structured receipt explicitly proves that task input was not accepted. The retry reuses the same Task with `--retry-of`; missing heartbeats, timeouts, and `unverifiable` liveness do not qualify.
 
 No-progress detection stops when a repair leaves the working tree unchanged and Codex repeats the same review feedback.
+
+## When a worker fails to start
+
+`WORKER_FAILED: worker-start failed at stage <stage>: <reason>` quotes Orca's start receipt, including any residual resources and the exact recovery command. The most common cause is an agent that opened an interactive prompt before it could accept the task, for example:
+
+- `Agent startup blocked: agent-hooks-review-prompt` — Codex found changed or untrusted hooks (Orca itself installs `~/.codex/hooks.json` to observe Codex) and is waiting for you to review them. Open the residual terminal in Orca, or start `codex` once by hand, accept the hook review, then run the recovery command from the receipt and re-run the loop.
+- A login or account-selection prompt — sign the agent in once interactively, then re-run.
+
+The controller does not retry these launches: the same prompt would block again. It also leaves the residual terminal open so you can see and answer the prompt; release it with the recovery command once resolved.
 
 ## Inspection and recovery
 

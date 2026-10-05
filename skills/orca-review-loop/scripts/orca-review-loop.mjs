@@ -338,6 +338,30 @@ function shellQuote(value) {
   return /^[A-Za-z0-9_@%+=:,./-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+// Orca's start receipt carries the real reason and an exact recovery command; never reduce it to "failed".
+export function describeStartFailure(receipt) {
+  const stage = findValue(receipt, ["failedStage", "failed_stage", "stage"]);
+  const error = receipt?.error && typeof receipt.error === "object" ? receipt.error : null;
+  const reason = findValue(receipt, ["lastError", "last_error"]) ?? error?.message ?? (typeof receipt?.error === "string" ? receipt.error : null);
+  const residual = findValue(receipt, ["residualResources", "residual_resources"]);
+  // Recovery guidance has appeared as a prose string (`recovery`), as an argv list (`nextCommands`),
+  // and nested under error.data; accept all of them.
+  const recoveryParts = [];
+  for (const value of [findValue(receipt, ["recovery"]), findValue(receipt, ["nextCommands", "next_commands"])]) {
+    if (typeof value === "string" && value.trim()) recoveryParts.push(value.trim());
+    else if (Array.isArray(value)) recoveryParts.push(...value.filter((v) => typeof v === "string" && v.trim()).map((v) => v.trim()));
+  }
+  let message = "worker-start failed";
+  if (stage) message += ` at stage ${stage}`;
+  if (error?.code) message += ` (${error.code})`;
+  if (reason) message += `: ${typeof reason === "string" ? reason : reason.message ?? JSON.stringify(reason)}`;
+  if (Array.isArray(residual) && residual.length > 0) {
+    message += `. Residual resources: ${residual.map((r) => `${r.kind ?? "resource"} ${r.id ?? ""}`.trim()).join(", ")}`;
+  }
+  if (recoveryParts.length > 0) message += `. Recovery: ${recoveryParts.join("; ")}`;
+  return message;
+}
+
 function worktreeSelector(configured) {
   return configured === "current" ? `path:${ROOT}` : configured;
 }
@@ -451,13 +475,17 @@ class Controller {
       dispatchId: namedId(receipt, "dispatch"),
       terminalHandle: findValue(receipt, ["terminalHandle", "terminal_handle", "handle"]),
     };
+    if (response.status !== 0 && (!worker.taskId || !worker.dispatchId)) {
+      // Failed before a Dispatch existed (bad agent, fenced coordinator, ...): nothing to retry or reclaim.
+      throw new LoopError("WORKER_FAILED", describeStartFailure(receipt), { receipt, retryableNoStart: false });
+    }
     if (!worker.taskId || !worker.dispatchId) {
       throw new LoopError("ORCA_ERROR", "worker-start omitted lifecycle IDs", { receipt });
     }
     if (!this.rootTaskId) this.rootTaskId = worker.taskId;
     if (response.status !== 0) {
       const inputAccepted = findValue(receipt, ["inputAccepted", "input_accepted"]);
-      throw new LoopError("WORKER_FAILED", "worker-start failed", {
+      throw new LoopError("WORKER_FAILED", describeStartFailure(receipt), {
         receipt,
         worker,
         retryableNoStart: inputAccepted === false,
@@ -677,6 +705,13 @@ function livenessState(row) {
   return live?.verdict ?? live?.state ?? live?.status ?? "unverifiable";
 }
 
+function defaultsNotice(config, configOption) {
+  const role = (r) => `${r.agent} (model: ${r.model ?? "agent default"}, effort: ${r.effort ?? "agent default"})`;
+  const setup = configOption ? `orca-review-loop setup --config ${shellQuote(configOption)}` : "orca-review-loop setup";
+  return `No ${configOption ?? ".orca-loop.json"} found; using built-in defaults: implement ${role(config.implement)}, review ${role(config.review)}, maxRounds ${config.maxRounds}.\n`
+    + `Run \`${setup}\` in an interactive terminal to choose each worker's model and thinking effort, and the max review rounds.\n`;
+}
+
 export async function main(argv = process.argv.slice(2)) {
   let controller;
   try {
@@ -693,6 +728,7 @@ export async function main(argv = process.argv.slice(2)) {
     if (options.maxRounds !== undefined) config.maxRounds = options.maxRounds;
     if (options.mode !== undefined) config.mode = options.mode;
     validateConfig(config);
+    if (!existsSync(configPath)) process.stdout.write(defaultsNotice(config, options.config));
     if (config.mode === "spec" && !options.artifact) throw new LoopError("PROTOCOL_ERROR", "--mode spec requires --artifact <path>");
     if (config.mode === "code" && options.artifact) throw new LoopError("PROTOCOL_ERROR", "--artifact is only valid with --mode spec");
     // Like --task-file, --artifact is taken relative to the caller's cwd, then validated against ROOT.

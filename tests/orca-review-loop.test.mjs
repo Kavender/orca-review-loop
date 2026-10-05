@@ -5,7 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { payloadOf, subjectDisposition, validateDone } from "../skills/orca-review-loop/scripts/orca-review-loop.mjs";
+import { describeStartFailure, payloadOf, subjectDisposition, validateDone } from "../skills/orca-review-loop/scripts/orca-review-loop.mjs";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CLI = join(REPO, "skills/orca-review-loop/scripts/orca-review-loop.mjs");
@@ -28,7 +28,7 @@ function runScenario(completions, options = {}) {
   const scenarioPath = join(area, "scenario.json");
   const statePath = join(area, "state.json");
   writeFileSync(scenarioPath, JSON.stringify({ completions, ...options.scenario }));
-  writeFileSync(join(root, ".orca-loop.json"), JSON.stringify({
+  if (!options.noConfig) writeFileSync(join(root, ".orca-loop.json"), JSON.stringify({
     maxRounds: options.maxRounds || 5,
     waitTimeoutMs: 1,
     maxEmptyWaitsBeforeInspect: 1,
@@ -462,4 +462,53 @@ test("an artifact whose parent is a regular file fails with a clear error", () =
   const { result, state } = runScenario([], { args: ["--mode", "spec", "--artifact", "candidate.txt/guest.md"] });
   assert.match(result.stderr, /RESULT PROTOCOL_ERROR: artifact path is not usable: ENOTDIR/);
   assert.equal(state.starts, 0);
+});
+
+test("a blocked agent start reports Orca's reason and recovery command", () => {
+  const { result, state } = runScenario([{ disposition: "DONE" }], { scenario: { blockedStartAt: 2 } });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /RESULT WORKER_FAILED: worker-start failed at stage agent_readiness: Agent startup blocked: agent-hooks-review-prompt/);
+  assert.match(result.stderr, /Residual resources: terminal term_blocked/);
+  assert.match(result.stderr, /Recovery: .*worker-release --dispatch ctx_2/);
+  assert.equal(state.starts, 2);
+  assert.deepEqual(state.releases, ["ctx_1"]);
+});
+
+test("describeStartFailure degrades gracefully on a bare receipt", () => {
+  assert.equal(describeStartFailure({}), "worker-start failed");
+  assert.equal(describeStartFailure({ failedStage: "x", lastError: { message: "boom" } }), "worker-start failed at stage x: boom");
+  assert.equal(describeStartFailure({ ok: false, error: { code: "e", message: "m", data: { recovery: "do this" } } }), "worker-start failed (e): m. Recovery: do this");
+});
+
+test("recovery given as nextCommands is surfaced too", () => {
+  const { result } = runScenario([{ disposition: "DONE" }], { scenario: { blockedStartAt: 2, recoveryAsNextCommands: true } });
+  assert.match(result.stderr, /Recovery: orca orchestration worker-release --dispatch ctx_2 --json/);
+});
+
+test("a pre-dispatch start rejection reports Orca's error instead of 'omitted lifecycle IDs'", () => {
+  const { result, state } = runScenario([], { scenario: { preDispatchFailureAt: 1 } });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /RESULT WORKER_FAILED: worker-start failed \(consumer_fenced\): worker-start requires the coordinator terminal/);
+  assert.match(result.stderr, /Recovery: orca orchestration run-show --id run_test --json/);
+  assert.doesNotMatch(result.stderr, /omitted lifecycle IDs/);
+  assert.equal(state.starts, 1);
+  assert.deepEqual(state.releases, []);
+});
+
+test("a run without .orca-loop.json announces the default workers and points to setup", () => {
+  const { result } = runScenario([], { noConfig: true, scenario: { preDispatchFailureAt: 1 } });
+  assert.match(result.stdout, /No \.orca-loop\.json found; using built-in defaults: implement claude \(model: agent default, effort: agent default\), review codex \(model: agent default, effort: agent default\), maxRounds 5\./);
+  assert.match(result.stdout, /orca-review-loop setup/);
+});
+
+test("a missing --config file is named in the notice and in the setup command", () => {
+  const { result } = runScenario([], { noConfig: true, args: ["--config", "configs/team.json"], scenario: { preDispatchFailureAt: 1 } });
+  assert.match(result.stdout, /No configs\/team\.json found; using built-in defaults/);
+  assert.match(result.stdout, /Run `orca-review-loop setup --config configs\/team\.json`/);
+  assert.doesNotMatch(result.stdout, /\.orca-loop\.json/);
+});
+
+test("a configured run stays quiet about defaults", () => {
+  const { result } = runScenario([{ disposition: "DONE" }, { disposition: "PASS" }]);
+  assert.doesNotMatch(result.stdout, /built-in defaults/);
 });

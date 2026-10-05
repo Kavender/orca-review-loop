@@ -48,7 +48,21 @@ if (command === "worktree-show") {
   if (value("--task")) state.current.taskId = value("--task");
   state.heartbeatSent = false;
   state.pending = null;
-  if ((scenario.startFailures || 0) >= id) {
+  if (scenario.preDispatchFailureAt === id) {
+    // Real shape when Orca rejects the start before creating a Dispatch: no result, no lifecycle IDs.
+    save();
+    process.stdout.write(`${JSON.stringify({ id: "fake", ok: false, error: { code: "consumer_fenced",
+      message: "worker-start requires the coordinator terminal currently bound to the Task Run.",
+      data: { nextCommands: ["orca orchestration run-show --id run_test --json"] } } })}\n`);
+    process.exitCode = 1;
+  } else if (scenario.blockedStartAt === id) {
+    output({ runId: "run_test", taskId: state.current.taskId, dispatchId: state.current.dispatchId, state: "failed",
+      stage: "agent_readiness", failedStage: "agent_readiness", lastError: "Agent startup blocked: agent-hooks-review-prompt",
+      residualResources: [{ kind: "terminal", role: "agent", action: "created", id: "term_blocked" }],
+      ...(scenario.recoveryAsNextCommands
+        ? { nextCommands: [`orca orchestration worker-release --dispatch ${state.current.dispatchId} --json`] }
+        : { recovery: `This start created a terminal that never ran the Task. Close it with: orca orchestration worker-release --dispatch ${state.current.dispatchId}` }) }, 1);
+  } else if ((scenario.startFailures || 0) >= id) {
     output({ task: { id: state.current.taskId }, dispatch: { id: state.current.dispatchId },
       inputAccepted: false, failedStage: "before_input" }, 1);
   } else {

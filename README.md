@@ -43,7 +43,7 @@ cd /path/to/project
 orca-review-loop setup
 ```
 
-Setup discovers the models currently offered by the installed Claude Code and Codex CLIs, then lets you choose the model and thinking effort independently for implementation and review. Discovery runs from an isolated temporary directory and filters Claude session/router aliases that Orca cannot forward. Codex effort choices are specific to the selected model. Choosing `default` stores `null` and leaves that setting to the agent; you can also enter an opaque model or effort value manually when using a newer or custom configuration. An agent without a discovery adapter requires explicit confirmation before it is saved.
+Setup discovers the models currently offered by the installed Claude Code and Codex CLIs, then lets you choose the model and thinking effort independently for implementation and review, plus the maximum number of review rounds (default 5; each round costs one implement and one review turn). Discovery runs from an isolated temporary directory and filters Claude session/router aliases that Orca cannot forward. Codex effort choices are specific to the selected model. Choosing `default` stores `null` and leaves that setting to the agent; you can also enter an opaque model or effort value manually when using a newer or custom configuration. An agent without a discovery adapter requires explicit confirmation before it is saved.
 
 Setup requires an interactive terminal. It previews the result before atomically creating or updating `.orca-loop.json`, preserves unrelated settings, and never launches an Orca worker. Use `orca-review-loop setup --config <path>` for another config file inside the target project.
 
@@ -51,7 +51,7 @@ Run it from any target repository:
 
 ```bash
 cd /path/to/project
-orca-review-loop --task "Fix the bug and add regression coverage" --max-rounds 5
+orca-review-loop --task "Fix the bug and add regression coverage"
 ```
 
 Use `--task-file <path>` for a longer specification. The target worktree must be clean unless `--allow-dirty` is explicitly supplied.
@@ -78,7 +78,7 @@ After a spec-mode `PASS` the controller prints that suggested code-mode command.
 
 Defaults can be overridden with a `.orca-loop.json` in the target project root (see [`examples/orca-loop.config.json`](examples/orca-loop.config.json)). Runtime state lives under `.orca-loop/`, which you should add to the target project's `.gitignore`.
 
-An explicit `effort` requires an explicit `model`; invalid role configuration is rejected before the controller contacts Orca. Users who skip setup retain the built-in Claude/Codex defaults.
+An explicit `effort` requires an explicit `model`; invalid role configuration is rejected before the controller contacts Orca. Users who skip setup retain the built-in Claude/Codex defaults; a run with no config file prints the workers it is using and points to `orca-review-loop setup`.
 
 ## Codex Skill
 
