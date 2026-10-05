@@ -338,6 +338,22 @@ function shellQuote(value) {
   return /^[A-Za-z0-9_@%+=:,./-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+// Orca's start receipt carries the real reason and an exact recovery command; never reduce it to "failed".
+export function describeStartFailure(receipt) {
+  const stage = findValue(receipt, ["failedStage", "failed_stage", "stage"]);
+  const reason = findValue(receipt, ["lastError", "last_error", "error"]);
+  const recovery = findValue(receipt, ["recovery"]);
+  const residual = findValue(receipt, ["residualResources", "residual_resources"]);
+  let message = "worker-start failed";
+  if (stage) message += ` at stage ${stage}`;
+  if (reason) message += `: ${typeof reason === "string" ? reason : reason.message ?? JSON.stringify(reason)}`;
+  if (Array.isArray(residual) && residual.length > 0) {
+    message += `. Residual resources: ${residual.map((r) => `${r.kind ?? "resource"} ${r.id ?? ""}`.trim()).join(", ")}`;
+  }
+  if (typeof recovery === "string" && recovery.trim()) message += `. Recovery: ${recovery.trim()}`;
+  return message;
+}
+
 function worktreeSelector(configured) {
   return configured === "current" ? `path:${ROOT}` : configured;
 }
@@ -457,7 +473,7 @@ class Controller {
     if (!this.rootTaskId) this.rootTaskId = worker.taskId;
     if (response.status !== 0) {
       const inputAccepted = findValue(receipt, ["inputAccepted", "input_accepted"]);
-      throw new LoopError("WORKER_FAILED", "worker-start failed", {
+      throw new LoopError("WORKER_FAILED", describeStartFailure(receipt), {
         receipt,
         worker,
         retryableNoStart: inputAccepted === false,

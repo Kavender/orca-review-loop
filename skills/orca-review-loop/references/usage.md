@@ -127,6 +127,15 @@ One launch retry is allowed only when `worker-start` itself fails and its struct
 
 No-progress detection stops when a repair leaves the working tree unchanged and Codex repeats the same review feedback.
 
+## When a worker fails to start
+
+`WORKER_FAILED: worker-start failed at stage <stage>: <reason>` quotes Orca's start receipt, including any residual resources and the exact recovery command. The most common cause is an agent that opened an interactive prompt before it could accept the task, for example:
+
+- `Agent startup blocked: agent-hooks-review-prompt` — Codex found changed or untrusted hooks (Orca itself installs `~/.codex/hooks.json` to observe Codex) and is waiting for you to review them. Open the residual terminal in Orca, or start `codex` once by hand, accept the hook review, then run the recovery command from the receipt and re-run the loop.
+- A login or account-selection prompt — sign the agent in once interactively, then re-run.
+
+The controller does not retry these launches: the same prompt would block again. It also leaves the residual terminal open so you can see and answer the prompt; release it with the recovery command once resolved.
+
 ## Inspection and recovery
 
 Use Orca's durable mailbox and worker records:

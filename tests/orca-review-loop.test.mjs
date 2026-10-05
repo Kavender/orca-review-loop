@@ -5,7 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { payloadOf, subjectDisposition, validateDone } from "../skills/orca-review-loop/scripts/orca-review-loop.mjs";
+import { describeStartFailure, payloadOf, subjectDisposition, validateDone } from "../skills/orca-review-loop/scripts/orca-review-loop.mjs";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CLI = join(REPO, "skills/orca-review-loop/scripts/orca-review-loop.mjs");
@@ -462,4 +462,19 @@ test("an artifact whose parent is a regular file fails with a clear error", () =
   const { result, state } = runScenario([], { args: ["--mode", "spec", "--artifact", "candidate.txt/guest.md"] });
   assert.match(result.stderr, /RESULT PROTOCOL_ERROR: artifact path is not usable: ENOTDIR/);
   assert.equal(state.starts, 0);
+});
+
+test("a blocked agent start reports Orca's reason and recovery command", () => {
+  const { result, state } = runScenario([{ disposition: "DONE" }], { scenario: { blockedStartAt: 2 } });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /RESULT WORKER_FAILED: worker-start failed at stage agent_readiness: Agent startup blocked: agent-hooks-review-prompt/);
+  assert.match(result.stderr, /Residual resources: terminal term_blocked/);
+  assert.match(result.stderr, /Recovery: .*worker-release --dispatch ctx_2/);
+  assert.equal(state.starts, 2);
+  assert.deepEqual(state.releases, ["ctx_1"]);
+});
+
+test("describeStartFailure degrades gracefully on a bare receipt", () => {
+  assert.equal(describeStartFailure({}), "worker-start failed");
+  assert.equal(describeStartFailure({ failedStage: "x", lastError: { message: "boom" } }), "worker-start failed at stage x: boom");
 });
