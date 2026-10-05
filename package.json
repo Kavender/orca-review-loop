@@ -16,6 +16,7 @@
   "license": "Apache-2.0",
   "files": [
     "skills/orca-review-loop",
+    "skills/orca-review-loop-setup",
     "examples/orca-loop.config.json",
     "README.md"
   ],
