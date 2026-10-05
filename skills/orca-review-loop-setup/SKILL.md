@@ -32,13 +32,22 @@ question each, headers `implement` and `review`) so the user gets the tabbed
 `□ implement □ review ✔ Submit` picker. A call's options are fixed up front, so a later step's
 options can only come from earlier answers: never put agent and model in the same call.
 
-`AskUserQuestion` allows 2-4 options per question and always adds a free-text "Other"/"Type
-something." entry. Use that for anything that does not fit (more agents, a manual model id). Put
-the current value first, marked "(current)" in its description.
+`AskUserQuestion` requires **2-4 declared options** per question. The free-text "Other"/"Type
+something." entry it adds does not count toward the minimum, and a call with any one-option
+question is rejected outright. Use Other for anything that does not fit (more agents, a manual model
+id). Put the current value first, marked "(current)" in its description, but only when that value
+is still valid (see each round).
+
+**Fewer than 2 real options:** if a model or effort question would have only `default` (discovery
+failed, returned no models, or a manual model has no `defaultEfforts`), do not put it in the call.
+Instead say in one line that the role uses the default ("no models discovered for <agent>; using its
+default"), and in plain chat ask the user to reply with an id if they want to pin one. Never pad
+with made-up values.
 
 **Round 1: agents and rounds** (one call, three questions):
-- `implement` / `review`: "Which agent should handle the <role> phase?" Options are up to 4 agents:
-  the current one, then installed agents. Use the agent `label` as the option label and put the id
+- `implement` / `review`: "Which agent should handle the <role> phase?" Options are 4 agents: the
+  current one, then installed agents, then known uninstalled agents to fill the remaining slots
+  (discovery always lists more than 2, so this question always has 2-4 options). Use the agent `label` as the option label and put the id
   and caveats in the description ("CLI not on this machine", "uses its own model config"). Users can
   type any other Orca agent id via Other; if discovery does not know it, warn once that setup cannot
   validate it.
@@ -53,7 +62,9 @@ role's agent did not change. Other takes a manual id. Skip the call if no role n
 
 **Round 3: effort** (one call; ask only roles with an explicit, non-default model): options are
 `default` plus up to 3 of that model's `efforts` (or the agent's `defaultEfforts` for a manual id).
-A default model means default effort; do not ask.
+A default model means default effort; do not ask. The current effort is valid only if **both** that
+role's agent and model are unchanged. Only then offer it first as "(current)". Otherwise put
+`default` first and do not carry the old effort over (the same rule the CLI applies).
 
 If a role ends up with a single question, ask it alone. Never reuse one role's model or effort list
 for the other role.
