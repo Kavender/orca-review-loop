@@ -200,7 +200,9 @@ export function discoverAgent(agent, { spawn = spawnSync, timeoutMs = 15_000, te
 const sgr = (code) => (text) => `\x1b[${code}m${text}\x1b[0m`;
 const STYLE = { bold: sgr(1), dim: sgr(2), accent: sgr("1;36"), chip: sgr("1;7;36") };
 class SetupCancelled extends Error {}
-const KEY = { up: ["\x1b[A", "k"], down: ["\x1b[B", "j"], enter: ["\r", "\n"], cancel: ["\x03", "\x1b"] };
+// Ctrl-C arrives as a keypress in raw mode; surface it as an interrupt (exit 130), not a cancel.
+export class SetupInterrupted extends Error {}
+const KEY = { up: ["\x1b[A", "k"], down: ["\x1b[B", "j"], enter: ["\r", "\n"], cancel: ["\x1b"], interrupt: ["\x03"] };
 
 export class TerminalPrompter {
   constructor(input = process.stdin, output = process.stdout) {
@@ -283,6 +285,7 @@ export class TerminalPrompter {
       const onData = (chunk) => {
         const key = chunk.toString();
         if (KEY.cancel.includes(key)) return finish(() => { erase(); reject(new SetupCancelled()); });
+        if (KEY.interrupt.includes(key)) return finish(() => reject(new SetupInterrupted("setup interrupted")));
         if (KEY.enter.includes(key)) return finish(() => { summarize(); resolvePromise(choices[index].value); });
         if (KEY.up.includes(key)) index = (index - 1 + choices.length) % choices.length;
         else if (KEY.down.includes(key)) index = (index + 1) % choices.length;

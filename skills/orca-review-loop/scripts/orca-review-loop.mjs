@@ -5,7 +5,7 @@ import { basename, dirname, isAbsolute, join, relative as relativePath, resolve,
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { ConfigError, DEFAULTS, mergeConfig, validateConfig } from "./config.mjs";
-import { runSetup } from "./setup.mjs";
+import { runSetup, SetupInterrupted } from "./setup.mjs";
 
 // The target is always the caller's project, never this skill/package directory.
 const ROOT = resolve(process.env.ORCA_LOOP_ROOT || process.cwd());
@@ -750,6 +750,10 @@ export async function main(argv = process.argv.slice(2)) {
     process.stdout.write(`RESULT ${result.status}\n`);
     return 0;
   } catch (error) {
+    if (error instanceof SetupInterrupted) {
+      process.stderr.write("\nSetup interrupted; configuration was not changed.\n");
+      return 130;
+    }
     const wrapped = error instanceof LoopError ? error : new LoopError("PROTOCOL_ERROR",
       error instanceof ConfigError ? error.message : error.stack || error.message || String(error));
     controller?.log("result", { status: wrapped.status, message: wrapped.message, details: wrapped.details });

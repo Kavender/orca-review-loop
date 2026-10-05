@@ -17,6 +17,7 @@ import {
   parseCodexDiscovery,
   parseSetupArgs,
   runSetup,
+  SetupInterrupted,
   writeConfigAtomic,
 } from "../skills/orca-review-loop/scripts/setup.mjs";
 
@@ -387,6 +388,18 @@ test("Esc in the interactive setup cancels cleanly and a new picker is spaced fr
   const plain = out.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
   assert.match(plain, /→ Claude Code\n\n implement phase/);
   assert.match(plain, /Setup cancelled; configuration was not changed\./);
+});
+
+test("Ctrl-C in the interactive setup is an interrupt, not a cancel", async () => {
+  const { EventEmitter } = await import("node:events");
+  const root = freshRoot();
+  const input = Object.assign(new EventEmitter(), { isTTY: true, isRaw: false, setRawMode(v) { this.isRaw = v; }, resume() {}, pause() {} });
+  const pending = runSetup({ root, input, output: { isTTY: true, write() {} }, discoveryFn: discovery, catalogue: AGENT_CATALOGUE });
+  await new Promise((r) => setImmediate(r));
+  input.emit("data", Buffer.from("\x03"));
+  await assert.rejects(pending, SetupInterrupted);
+  assert.equal(input.isRaw, false);
+  assert.equal(existsSync(join(root, ".orca-loop.json")), false);
 });
 
 test("setup help works without a TTY and documents the command", () => {
