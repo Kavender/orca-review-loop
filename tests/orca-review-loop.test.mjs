@@ -200,6 +200,38 @@ test("settled workers are released once and deliveries acknowledged", () => {
   assert.equal(state.acks.length, 4);
 });
 
+test("terminals the user took over are reported with a close command by default", () => {
+  const { result, state } = runScenario([{ disposition: "DONE" }, { disposition: "PASS" }], { scenario: { takenOver: ["ctx_1"] } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /NOTE 1 worker terminal\(s\) stayed open/);
+  assert.match(result.stdout, /implement r1: orca terminal close --terminal term_1 --tab/);
+  assert.match(result.stdout, /RESULT PASS\n$/);
+  assert.deepEqual(state.closes, []);
+});
+
+test("closeTakenOverTerminals closes only taken-over terminals, also on failure exits", () => {
+  const passed = runScenario([{ disposition: "DONE" }, { disposition: "PASS" }],
+    { scenario: { takenOver: ["ctx_2"] }, config: { closeTakenOverTerminals: true } });
+  assert.equal(passed.result.status, 0, passed.result.stderr);
+  assert.deepEqual(passed.state.closes, ["term_2"]);
+  assert.deepEqual(passed.state.commands.find((c) => c.command === "terminal-close").args, ["terminal", "close", "--terminal", "term_2", "--tab"]);
+  assert.match(passed.result.stdout, /Closed 1 worker terminal/);
+
+  const blocked = runScenario([{ disposition: "DONE" }, { disposition: "BLOCKED" }],
+    { scenario: { takenOver: ["ctx_1"], closeFails: true }, config: { closeTakenOverTerminals: true } });
+  assert.equal(blocked.result.status, 1);
+  assert.deepEqual(blocked.state.closes, ["term_1"]);
+  assert.match(blocked.result.stderr, /could not close implement r1: orca terminal close --terminal term_1 --tab/);
+  assert.match(blocked.result.stderr, /RESULT BLOCKED/);
+});
+
+test("no taken-over terminals means no note and no close", () => {
+  const { result, state } = runScenario([{ disposition: "DONE" }, { disposition: "PASS" }], { config: { closeTakenOverTerminals: true } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stdout, /NOTE|Closed/);
+  assert.deepEqual(state.closes, []);
+});
+
 test("wait timeout is a checkpoint and does not duplicate the worker", () => {
   const { result, state } = runScenario(
     [{ disposition: "DONE" }, { disposition: "PASS" }],

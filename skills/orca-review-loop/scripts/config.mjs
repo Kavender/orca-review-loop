@@ -13,6 +13,7 @@ export const DEFAULTS = {
   maxEmptyWaitsBeforeInspect: 3,
   dirtyWorktreePolicy: "refuse",
   retainTerminals: false,
+  closeTakenOverTerminals: false,
   logBodies: false,
 };
 
