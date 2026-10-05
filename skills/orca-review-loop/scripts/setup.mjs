@@ -197,6 +197,8 @@ export function discoverAgent(agent, { spawn = spawnSync, timeoutMs = 15_000, te
 
 // ---------- terminal prompter ----------
 
+const sgr = (code) => (text) => `\x1b[${code}m${text}\x1b[0m`;
+const STYLE = { bold: sgr(1), dim: sgr(2), accent: sgr("1;36"), chip: sgr("1;7;36") };
 const KEY = { up: ["\x1b[A", "k"], down: ["\x1b[B", "j"], enter: ["\r", "\n"], cancel: ["\x03", "\x1b"] };
 
 export class TerminalPrompter {
@@ -228,11 +230,11 @@ export class TerminalPrompter {
     return Boolean(this.input.isTTY && typeof this.input.setRawMode === "function" && this.output.isTTY);
   }
 
-  async choose(label, choices, defaultValue) {
+  async choose(label, choices, defaultValue, header) {
     const defaultIndex = Math.max(0, choices.findIndex((choice) => choice.value === defaultValue));
-    if (this.canSelectInteractively) return this.selectWithKeys(label, choices, defaultIndex);
-    this.note(label);
-    choices.forEach((choice, index) => this.note(`  ${index + 1}) ${choice.label}`));
+    if (this.canSelectInteractively) return this.selectWithKeys(label, choices, defaultIndex, header);
+    this.note(header ? `[${header}] ${label}` : label);
+    choices.forEach((choice, index) => this.note(`  ${index + 1}) ${choice.label}${choice.description ? ` — ${choice.description}` : ""}`));
     for (;;) {
       const answer = (await this.question(`Choose [${defaultIndex + 1}]: `)).trim();
       const index = answer ? Number(answer) - 1 : defaultIndex;
@@ -241,16 +243,30 @@ export class TerminalPrompter {
     }
   }
 
-  // Arrow-key list. Digits jump, Enter confirms, Esc or Ctrl-C cancels the whole setup.
-  selectWithKeys(label, choices, initialIndex) {
+  // Arrow-key list styled like Claude Code's question picker: header chip, bold question,
+  // bold labels with dim descriptions. Digits jump, Enter confirms, Esc or Ctrl-C cancels setup.
+  selectWithKeys(label, choices, initialIndex, header) {
     const { input, output } = this;
     let index = initialIndex;
-    const render = (first) => {
-      if (!first) output.write(`\x1b[${choices.length + 1}A`);
-      output.write(`\x1b[2K${label}  (↑/↓ move, Enter select, Esc cancel)\n`);
+    let drawn = 0;
+    const erase = () => { if (drawn) output.write(`\x1b[${drawn}A\x1b[J`); };
+    const render = () => {
+      erase();
+      const lines = [];
+      if (header) lines.push(`${STYLE.chip(` ${header} `)}`, "");
+      lines.push(STYLE.bold(label), "");
       choices.forEach((choice, i) => {
-        output.write(`\x1b[2K${i === index ? "❯ " : "  "}${i + 1}. ${choice.label}\n`);
+        const text = `${i + 1}. ${choice.label}`;
+        lines.push(i === index ? STYLE.accent(`❯ ${text}`) : `  ${STYLE.bold(text)}`);
+        if (choice.description) lines.push(`     ${STYLE.dim(choice.description)}`);
       });
+      lines.push("", STYLE.dim("↑/↓ to navigate · Enter to select · Esc to cancel"));
+      output.write(`${lines.join("\n")}\n`);
+      drawn = lines.length;
+    };
+    const summarize = () => {
+      erase();
+      output.write(`${STYLE.dim("●")} ${label} ${STYLE.dim("→")} ${STYLE.bold(choices[index].label)}\n`);
     };
     return new Promise((resolvePromise, reject) => {
       const wasRaw = input.isRaw;
@@ -263,17 +279,17 @@ export class TerminalPrompter {
       const onData = (chunk) => {
         const key = chunk.toString();
         if (KEY.cancel.includes(key)) return finish(() => reject(new ConfigError("setup cancelled")));
-        if (KEY.enter.includes(key)) return finish(() => resolvePromise(choices[index].value));
+        if (KEY.enter.includes(key)) return finish(() => { summarize(); resolvePromise(choices[index].value); });
         if (KEY.up.includes(key)) index = (index - 1 + choices.length) % choices.length;
         else if (KEY.down.includes(key)) index = (index + 1) % choices.length;
         else if (/^[1-9]$/.test(key) && Number(key) <= choices.length) index = Number(key) - 1;
         else return;
-        render(false);
+        render();
       };
       input.setRawMode(true);
       input.resume();
       input.on("data", onData);
-      render(true);
+      render();
     });
   }
 
@@ -288,12 +304,15 @@ export class TerminalPrompter {
 // ---------- role configuration ----------
 
 function choiceSet(values, current, kind) {
-  const choices = [{ value: DEFAULT_CHOICE, label: "default (use the agent's configured default)" }];
+  const choices = [{ value: DEFAULT_CHOICE, label: "Default", description: "use the agent's configured default" }];
   for (const value of unique(values)) choices.push({ value, label: value });
   if (current && !choices.some((choice) => choice.value === current)) {
-    choices.push({ value: current, label: `${current} (current)` });
+    choices.push({ value: current, label: current, description: "current" });
   }
-  choices.push({ value: MANUAL_CHOICE, label: `enter a ${kind} manually` });
+  for (const choice of choices) {
+    if (choice.value === current) choice.description = [choice.description, "current"].filter(Boolean).join(" · ");
+  }
+  choices.push({ value: MANUAL_CHOICE, label: "Type something.", description: `enter a ${kind} manually` });
   return choices;
 }
 
@@ -301,12 +320,18 @@ function agentChoices(catalogue, current) {
   const ordered = [...catalogue].sort((a, b) => Number(b.installed) - Number(a.installed));
   const choices = ordered.map((entry) => ({
     value: entry.id,
-    label: `${entry.label} (${entry.id})${entry.installed ? "" : " — CLI not found on PATH"}${entry.supportsModel === false ? " — uses its own model config" : ""}`,
+    label: entry.label,
+    description: [
+      entry.id,
+      entry.id === current && "current",
+      !entry.installed && "CLI not found on PATH",
+      entry.supportsModel === false && "uses its own model config",
+    ].filter(Boolean).join(" · "),
   }));
   if (current && !choices.some((choice) => choice.value === current)) {
-    choices.push({ value: current, label: `${current} (current)` });
+    choices.push({ value: current, label: current, description: "current" });
   }
-  choices.push({ value: MANUAL_CHOICE, label: "enter another Orca agent id" });
+  choices.push({ value: MANUAL_CHOICE, label: "Type something.", description: "enter another Orca agent id" });
   return choices;
 }
 
@@ -322,7 +347,7 @@ export async function configureRole(name, current, prompt, discoveryFn = discove
   let agent;
   let capability;
   for (;;) {
-    agent = await prompt.choose(`${name} agent`, agentChoices(catalogue, current.agent), current.agent);
+    agent = await prompt.choose(`Which agent should handle the ${name} phase?`, agentChoices(catalogue, current.agent), current.agent, `${name} phase`);
     if (agent === MANUAL_CHOICE) agent = await requiredManualText(prompt, `${name} agent id`);
     capability = agentCapability(catalogue, agent);
     if (capability.source !== "unknown") break;
@@ -343,7 +368,7 @@ export async function configureRole(name, current, prompt, discoveryFn = discove
 
   const retainedModel = agent === current.agent ? current.model : null;
   const currentModel = retainedModel ?? DEFAULT_CHOICE;
-  let model = await prompt.choose(`${name} model`, choiceSet(discovery.models.map((item) => item.id), retainedModel, "model ID"), currentModel);
+  let model = await prompt.choose(`Which ${capability.label} model for ${name}?`, choiceSet(discovery.models.map((item) => item.id), retainedModel, "model ID"), currentModel, `${name} phase`);
   if (model === MANUAL_CHOICE) model = await requiredManualText(prompt, `${name} model ID`);
   if (model === DEFAULT_CHOICE) model = null;
   if (model === null) {
@@ -359,7 +384,7 @@ export async function configureRole(name, current, prompt, discoveryFn = discove
   const currentEffort = agent === current.agent && current.model === model && current.effort
     ? current.effort
     : DEFAULT_CHOICE;
-  let effort = await prompt.choose(`${name} thinking effort`, choiceSet(effortValues, currentEffort === DEFAULT_CHOICE ? null : currentEffort, "effort"), currentEffort);
+  let effort = await prompt.choose(`How much thinking effort for ${model}?`, choiceSet(effortValues, currentEffort === DEFAULT_CHOICE ? null : currentEffort, "effort"), currentEffort, `${name} phase`);
   if (effort === MANUAL_CHOICE) effort = await requiredManualText(prompt, `${name} effort`);
   if (effort === DEFAULT_CHOICE) effort = null;
   return { agent, model, effort };

@@ -25,30 +25,38 @@ succeeded. Do not invent models: offer only what discovery returned, plus "defau
 
 If `orca-review-loop` is not found, tell the user to `npm install -g orca-review-loop` and stop.
 
-## 2. Ask, one dependent question at a time
+## 2. Ask in rounds, both roles per call
 
-Each answer determines the next question's options, and `AskUserQuestion` builds all of a call's
-questions up front. So ask **sequentially**, one `AskUserQuestion` call per step, and derive each
-step's options from the previous answer. Do not bundle agent, model, and effort into one call.
+Put the implement and review questions for the same step into **one** `AskUserQuestion` call (one
+question each, headers `implement` and `review`) so the user gets the tabbed
+`□ implement □ review ✔ Submit` picker. A call's options are fixed up front, so a later step's
+options can only come from earlier answers: never put agent and model in the same call.
 
-For `implement`, then for `review`:
+`AskUserQuestion` allows 2-4 options per question and always adds a free-text "Other"/"Type
+something." entry. Use that for anything that does not fit (more agents, a manual model id). Put
+the current value first, marked "(current)" in its description.
 
-1. **Agent** — one question. List installed agents first; mark uninstalled ones "(CLI not on this
-   machine)" but keep them selectable, since the Orca worker server may differ. Pre-select the current
-   agent. If the user picks "Other" and types an id that discovery does not know, warn once that setup
-   cannot validate it.
-2. **Model** — only after the agent is known, and only if that agent's `supportsModel` is not
-   `false`. If it is `false`, skip with one line ("<agent> launches with the model from its own
-   config") and go to the next role. Otherwise the options are `default` (agent's own setting), each
-   id in *that agent's* `discovery.models`, and "Other" for a manual id. Pre-select the current model
-   only if the agent did not change.
-3. **Effort** — only after an explicit (non-default) model is chosen. Options are that model's
-   `efforts`, or the agent's `defaultEfforts` for a manual id, plus `default`. If the model is
-   `default`, do not ask; effort must also be default.
+**Round 1: agents and rounds** (one call, three questions):
+- `implement` / `review`: "Which agent should handle the <role> phase?" Options are up to 4 agents:
+  the current one, then installed agents. Use the agent `label` as the option label and put the id
+  and caveats in the description ("CLI not on this machine", "uses its own model config"). Users can
+  type any other Orca agent id via Other; if discovery does not know it, warn once that setup cannot
+  validate it.
+- `rounds`: "Max review rounds?" Options: `current.maxRounds` plus up to three of 3 / 5 / 10. Other
+  takes any integer 1-20.
 
-Then one final question for **max review rounds** (integer 1-20, default `current.maxRounds`).
+**Round 2: models** (one call; ask only the roles whose agent's `supportsModel` is not `false`):
+For an own-config agent, say in one line that "<agent> launches with the model from its own config"
+and set its model and effort to default. For each other role, offer `default` (agent's own setting)
+plus up to 3 ids from *that role's agent's* `discovery.models`. Only offer the current model if that
+role's agent did not change. Other takes a manual id. Skip the call if no role needs it.
 
-Never reuse a previous agent's model list or a previous model's effort list.
+**Round 3: effort** (one call; ask only roles with an explicit, non-default model): options are
+`default` plus up to 3 of that model's `efforts` (or the agent's `defaultEfforts` for a manual id).
+A default model means default effort; do not ask.
+
+If a role ends up with a single question, ask it alone. Never reuse one role's model or effort list
+for the other role.
 
 ## 3. Preview and write
 
