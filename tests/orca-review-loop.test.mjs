@@ -501,6 +501,13 @@ test("a run without .orca-loop.json announces the default workers and points to 
   assert.match(result.stdout, /orca-review-loop setup/);
 });
 
+test("a missing --config file is named in the notice and in the setup command", () => {
+  const { result } = runScenario([], { noConfig: true, args: ["--config", "configs/team.json"], scenario: { preDispatchFailureAt: 1 } });
+  assert.match(result.stdout, /No configs\/team\.json found; using built-in defaults/);
+  assert.match(result.stdout, /Run `orca-review-loop setup --config configs\/team\.json`/);
+  assert.doesNotMatch(result.stdout, /\.orca-loop\.json/);
+});
+
 test("a configured run stays quiet about defaults", () => {
   const { result } = runScenario([{ disposition: "DONE" }, { disposition: "PASS" }]);
   assert.doesNotMatch(result.stdout, /built-in defaults/);
