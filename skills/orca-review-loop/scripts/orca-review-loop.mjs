@@ -394,6 +394,7 @@ class Controller {
     this.runDir = null;
     this.deadline = Date.now() + config.maxTotalMinutes * 60_000;
     this.released = new Set();
+    this.workers = new Map();
   }
 
   print(line) { process.stdout.write(`${line}\n`); }
@@ -501,6 +502,7 @@ class Controller {
       throw new LoopError("ORCA_ERROR", `worker was placed in ${placedAt}, not the target worktree ${ROOT}${tail}`, { receipt, worker, residual });
     }
     this.log("worker_started", worker);
+    this.workers.set(worker.dispatchId, worker);
     return worker;
   }
 
@@ -635,6 +637,57 @@ class Controller {
     return { worker, message, disposition: validated.disposition };
   }
 
+  // Orca never auto-closes a terminal the user typed into (retainedReason "user_takeover"),
+  // so worker-release leaves it open. Report those at the end, or close them when configured.
+  // Never throws: this runs on every exit path and must not mask the loop's own result.
+  sweepTakenOverTerminals(write) {
+    // retainTerminals keeps every worker terminal on purpose; none of them are leftovers.
+    if (!this.runId || this.config.retainTerminals) return;
+    try {
+      const list = this.orca(["orchestration", "worker-list", "--run", this.runId], { allowFailure: true, timeoutMs: 30_000 });
+      const rows = [];
+      const collect = (node) => {
+        if (Array.isArray(node)) node.forEach(collect);
+        else if (node && typeof node === "object") {
+          if (node.dispatchId) rows.push(node);
+          else Object.values(node).forEach(collect);
+        }
+      };
+      collect(list.data);
+      const leftovers = rows.filter((row) => row.resource?.retainedReason === "user_takeover"
+        && SETTLED_WORKER_STATES.has(row.workerState)
+        && (row.agentTerminalHandle ?? row.resource?.terminalHandle));
+      if (!leftovers.length) return;
+      const describe = (row) => {
+        const handle = row.agentTerminalHandle ?? row.resource.terminalHandle;
+        const worker = this.workers.get(row.dispatchId);
+        return { handle, label: worker ? `${worker.phase} r${worker.round}` : row.dispatchId };
+      };
+      if (!this.config.closeTakenOverTerminals) {
+        write(`NOTE ${leftovers.length} worker terminal(s) stayed open because you typed into them (Orca keeps user-owned terminals):\n`);
+        for (const row of leftovers) {
+          const { handle, label } = describe(row);
+          write(`  ${label}: orca terminal close --terminal ${handle} --tab\n`);
+        }
+        write("  Set \"closeTakenOverTerminals\": true in .orca-loop.json to close them automatically.\n");
+        this.log("taken_over_terminals_reported", { handles: leftovers.map((row) => describe(row).handle) });
+        return;
+      }
+      const failed = [];
+      for (const row of leftovers) {
+        const { handle, label } = describe(row);
+        const close = this.orca(["terminal", "close", "--terminal", handle, "--tab"], { allowFailure: true, timeoutMs: 30_000 });
+        if (close.status !== 0) failed.push({ handle, label });
+        this.log(close.status === 0 ? "taken_over_terminal_closed" : "taken_over_terminal_close_failed", { handle, label });
+      }
+      const closed = leftovers.length - failed.length;
+      if (closed) write(`Closed ${closed} worker terminal(s) you had taken over.\n`);
+      for (const { handle, label } of failed) write(`  could not close ${label}: orca terminal close --terminal ${handle} --tab\n`);
+    } catch (error) {
+      this.log("terminal_sweep_failed", { error: error.message });
+    }
+  }
+
   run() {
     this.resolveWorktree();
     this.createRun();
@@ -689,6 +742,8 @@ class Controller {
   }
 }
 
+const SETTLED_WORKER_STATES = new Set(["succeeded", "failed", "stopped"]);
+
 function findWorkerRow(node, dispatchId) {
   if (!node || typeof node !== "object") return null;
   if ((node.dispatchId ?? node.dispatch_id) === dispatchId) return node;
@@ -742,6 +797,7 @@ export async function main(argv = process.argv.slice(2)) {
     if (findValue(status, ["reachable"]) === false) throw new LoopError("ORCA_ERROR", "Orca runtime is not reachable");
     controller = new Controller(task, config, options, makeOrca(), { task, artifact });
     const result = controller.run();
+    controller.sweepTakenOverTerminals((text) => process.stdout.write(text));
     controller.log("result", result);
     rmSync(controller.runDir, { recursive: true, force: true });
     if (config.mode === "spec" && result.status === "PASS") {
@@ -756,6 +812,7 @@ export async function main(argv = process.argv.slice(2)) {
     }
     const wrapped = error instanceof LoopError ? error : new LoopError("PROTOCOL_ERROR",
       error instanceof ConfigError ? error.message : error.stack || error.message || String(error));
+    controller?.sweepTakenOverTerminals((text) => process.stderr.write(text));
     controller?.log("result", { status: wrapped.status, message: wrapped.message, details: wrapped.details });
     process.stderr.write(`RESULT ${wrapped.status}: ${wrapped.message}\n`);
     return wrapped.status === "PASS" ? 0 : 1;

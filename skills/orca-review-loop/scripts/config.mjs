@@ -13,6 +13,7 @@ export const DEFAULTS = {
   maxEmptyWaitsBeforeInspect: 3,
   dirtyWorktreePolicy: "refuse",
   retainTerminals: false,
+  closeTakenOverTerminals: false,
   logBodies: false,
 };
 
@@ -66,6 +67,9 @@ export function validateConfig(config) {
   }
   if (!Number.isInteger(config.maxLaunchRetries) || config.maxLaunchRetries < 0 || config.maxLaunchRetries > 1) {
     throw new ConfigError("maxLaunchRetries must be 0 or 1");
+  }
+  for (const flag of ["retainTerminals", "closeTakenOverTerminals", "logBodies"]) {
+    if (typeof config[flag] !== "boolean") throw new ConfigError(`${flag} must be true or false`);
   }
   validateRole("implement", config.implement);
   validateRole("review", config.review);

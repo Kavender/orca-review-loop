@@ -9,10 +9,11 @@ const scenario = JSON.parse(readFileSync(scenarioPath, "utf8"));
 const state = existsSync(statePath)
   ? JSON.parse(readFileSync(statePath, "utf8"))
   : { starts: 0, completion: 0, current: null, heartbeatSent: false, pending: null,
-      active: 0, maxActive: 0, commands: [], releases: [], acks: [], stops: [] };
+      active: 0, maxActive: 0, commands: [], releases: [], acks: [], stops: [], closes: [] };
 
 const args = process.argv.slice(2).filter((arg) => arg !== "--json");
-const command = args[0] === "orchestration" || args[0] === "worktree" ? `${args[0] === "worktree" ? "worktree-" : ""}${args[1]}` : args[0];
+const command = args[0] === "orchestration" ? args[1]
+  : args[0] === "worktree" || args[0] === "terminal" ? `${args[0]}-${args[1]}` : args[0];
 const value = (flag) => {
   const index = args.indexOf(flag);
   return index >= 0 ? args[index + 1] : undefined;
@@ -121,7 +122,12 @@ if (command === "worktree-show") {
     output({ timedOut: true, delivery: { id: `empty_${state.commands.length}`, messages: [] } });
   }
 } else if (command === "worker-list") {
-  output({ workers: [{ dispatchId: state.current?.dispatchId, projection: { liveness: { verdict: scenario.liveness || "unverifiable" } } }] });
+  // scenario.takenOver: dispatch ids whose released terminal Orca kept because the user typed into it.
+  const takenOver = (scenario.takenOver || []).filter((id) => state.releases.includes(id)).map((id) => ({
+    dispatchId: id, workerState: "succeeded", agentTerminalHandle: `term_${id.slice(4)}`,
+    terminalState: "retained", resource: { releaseState: "retained", retainedReason: "user_takeover" } }));
+  const current = { dispatchId: state.current?.dispatchId, projection: { liveness: { verdict: scenario.liveness || "unverifiable" } } };
+  output({ workers: takenOver.some((row) => row.dispatchId === current.dispatchId) ? takenOver : [current, ...takenOver] });
 } else if (command === "worker-show") {
   output({ worker: { dispatchId: value("--dispatch"), observation: { status: scenario.liveness || "unverifiable" } } });
 } else if (command === "worker-read") {
@@ -131,6 +137,10 @@ if (command === "worktree-show") {
   state.releases.push(dispatch);
   state.active = Math.max(0, state.active - 1);
   output({ dispatchId: dispatch, state: command === "worker-release" ? "released" : "retained" });
+} else if (command === "terminal-close") {
+  state.closes.push(value("--terminal"));
+  if (scenario.closeFails) output({ error: { message: "close refused" } }, 1);
+  else output({ closed: true });
 } else {
   output({ error: { message: `unsupported fake command: ${command}` } }, 1);
 }

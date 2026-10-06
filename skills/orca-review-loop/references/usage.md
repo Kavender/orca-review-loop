@@ -86,6 +86,7 @@ Built-in defaults can be overridden by a `.orca-loop.json` file in the target pr
 - Three empty waits trigger worker inspection.
 - Full task and review bodies are not written to the JSONL event log by default.
 - Settled terminals are released, not retained.
+- Orca never auto-closes a worker terminal you typed into (it becomes user-owned, `retainedReason: "user_takeover"`). At the end of every run the controller lists those terminals with a ready-to-run `orca terminal close` command. Set `closeTakenOverTerminals: true` to have it close them instead; only settled workers' terminals are touched, and nothing is swept when `retainTerminals` is true. `retainTerminals`, `closeTakenOverTerminals`, and `logBodies` must be JSON booleans; anything else is rejected before the run starts.
 
 Use `--config <path>` for another JSON configuration, `--max-rounds` for a one-run override, and `--verbose-log` only when storing review text locally is acceptable. `ORCA_CLI_COMMAND` can point to a version-matched Orca executable or a test double.
 
