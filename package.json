@@ -1,7 +1,7 @@
 {
   "name": "orca-review-loop",
   "version": "0.3.1",
-  "description": "Deterministic Claude produce / Codex review loop for Orca, for code changes or specification documents",
+  "description": "Deterministic implement / review loop between any two Orca agents (Claude Code, Codex, Cursor, ...), for code changes or specification documents",
   "type": "module",
   "bin": {
     "orca-review-loop": "skills/orca-review-loop/scripts/orca-review-loop.mjs"

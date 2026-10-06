@@ -1,6 +1,6 @@
 ---
 name: orca-review-loop
-description: Run a reusable, supervised Claude produce / Codex review loop through Orca, for code changes (--mode code) or a specification document (--mode spec). Use when a user wants one task implemented or one spec written, independently reviewed, automatically revised from NEEDS_FIX feedback, and re-reviewed until PASS or a bounded stop condition.
+description: Run a reusable, supervised implement / review loop between Orca agents (Claude Code implements and Codex reviews by default; any Orca agent can fill either role), for code changes (--mode code) or a specification document (--mode spec). Use when a user wants one task implemented or one spec written, independently reviewed, automatically revised from NEEDS_FIX feedback, and re-reviewed until PASS or a bounded stop condition.
 ---
 
 # Orca Review Loop
@@ -11,7 +11,7 @@ Use the deterministic controller in `scripts/orca-review-loop.mjs`; do not coord
 
 1. Work from the target project's root directory.
 2. Resolve the session's Orca executable and load its version-matched orchestration guide with `orca skills get orchestration --json` (or the executable selected by the Orca CLI discovery rules).
-3. If the user wants to select worker models, thinking effort, or the max review rounds, have them run `orca-review-loop setup` in an interactive terminal from the project root. It discovers current Claude and Codex choices and updates `.orca-loop.json` without starting a worker. Do not start interactive setup inside a non-interactive command session.
+3. If the user wants to select worker models, thinking effort, or the max review rounds, have them run `orca-review-loop setup` in an interactive terminal from the project root. It lets them pick any Orca agent per role, discovers live model choices for Claude Code and Codex, and updates `.orca-loop.json` without starting a worker. Do not start interactive setup inside a non-interactive command session.
 4. Inspect the target worktree. The controller refuses dirty work by default; use `--allow-dirty` only when the user deliberately accepts that baseline.
 5. Confirm the task is concrete enough for an implementer and independent reviewer. Do not broaden its authority.
 
@@ -35,7 +35,7 @@ node <skill-directory>/scripts/orca-review-loop.mjs \
   --artifact docs/specs/<name>.md
 ```
 
-`--artifact` is required in spec mode and must be inside the target worktree. Use `--task-file <path>` for long task specifications. The controller creates a fresh Run, starts one worker at a time, routes exact Codex feedback to a fresh Claude repair worker, and stops at `PASS`, the review limit, or a safety boundary.
+`--artifact` is required in spec mode and must be inside the target worktree. Use `--task-file <path>` for long task specifications. The controller creates a fresh Run, starts one worker at a time, routes the reviewer's exact feedback to a fresh implementer repair worker, and stops at `PASS`, the review limit, or a safety boundary.
 
 Do not automatically answer worker questions, override escalations, clean a worktree, or relaunch a worker whose liveness is ambiguous. Those outcomes require the user or explicit Orca recovery evidence.
 
