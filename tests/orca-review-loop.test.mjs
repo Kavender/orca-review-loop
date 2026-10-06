@@ -80,6 +80,16 @@ test("PASS on first review", () => {
   assert.equal(state.releases.length, 2);
 });
 
+test("progress lines name the configured agents, not hardcoded Claude/Codex", () => {
+  const { result } = runScenario([{ disposition: "DONE" }, { disposition: "NEEDS_FIX" }, { disposition: "DONE" }, { disposition: "PASS" }],
+    { config: { implement: { agent: "cursor" }, review: { agent: "claude" } } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /round 1 implement \(cursor\): DONE/);
+  assert.match(result.stdout, /round 1 review \(claude\): NEEDS_FIX/);
+  assert.match(result.stdout, /round 2 repair \(cursor\): DONE/);
+  assert.match(result.stdout, /round 2 review \(claude\): PASS/);
+});
+
 test("configured model and effort pins are forwarded by role", () => {
   const { result, state } = runScenario([{ disposition: "DONE" }, { disposition: "PASS" }], {
     config: {

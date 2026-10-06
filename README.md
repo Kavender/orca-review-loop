@@ -3,22 +3,24 @@
 A reusable deterministic controller and Codex Skill for this workflow:
 
 ```text
-Claude produces → Codex reviews → PASS
-                        ↓ NEEDS_FIX
-                  Claude revises → fresh Codex review
+implementer produces → reviewer checks → PASS
+                             ↓ NEEDS_FIX
+                 implementer revises → fresh review
 ```
+
+Each role can be any agent Orca can launch (Claude Code, Codex, Cursor Agent, OpenCode, ...), with its own model and thinking effort. Out of the box Claude Code implements and Codex reviews; `orca-review-loop setup` changes either.
 
 It runs in two modes over the same controller:
 
-- `--mode code` (default): Claude implements and repairs code; Codex reviews the working-tree diff for bugs, regressions, and missing tests.
-- `--mode spec`: Claude creates or revises one specification file; Codex reviews that document for implementation readiness.
+- `--mode code` (default): the implementer writes and repairs code; the reviewer checks the working-tree diff for bugs, regressions, and missing tests.
+- `--mode spec`: the implementer creates or revises one specification file; the reviewer checks that document for implementation readiness.
 
-The controller uses Orca's durable Run, Task, Dispatch, and mailbox lifecycle. It runs one worker at a time, distinguishes lifecycle success from review approval, forwards exact review feedback, and defaults to at most five Codex reviews.
+The controller uses Orca's durable Run, Task, Dispatch, and mailbox lifecycle. It runs one worker at a time, distinguishes lifecycle success from review approval, forwards exact review feedback, and defaults to at most five reviews.
 
 ## Requirements
 
 - Node.js 22 or newer
-- The Orca CLI (`orca`) on your `PATH`, with Claude Code and Codex configured as Orca agents
+- The Orca CLI (`orca`) on your `PATH`, with the agents you choose configured in Orca (by default Claude Code and Codex)
 
 The controller drives both agents through Orca; it does not call any model API itself.
 
@@ -82,7 +84,7 @@ orca-review-loop \
   --artifact docs/specs/guest-access.md
 ```
 
-`--artifact` names the one file Claude may deliver. It must be a regular file inside the target worktree (symlinks are rejected); if it does not exist Claude creates it, otherwise Claude revises it in place. The controller verifies Claude actually produced it before each review, and tracks its content even when the path is git-ignored. Codex reviews the document and returns `PASS:` only when it is implementation-ready; its review body separates blocking findings from optional suggestions, and only blocking findings justify another round.
+`--artifact` names the one file the implementer may deliver. It must be a regular file inside the target worktree (symlinks are rejected); if it does not exist the implementer creates it, otherwise it revises it in place. The controller verifies the file was actually produced before each review, and tracks its content even when the path is git-ignored. The reviewer checks the document and returns `PASS:` only when it is implementation-ready; its review body separates blocking findings from optional suggestions, and only blocking findings justify another round.
 
 The two modes form a natural two-stage workflow, run by hand:
 
@@ -115,7 +117,7 @@ npm test
 python3 ~/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/orca-review-loop
 ```
 
-Tests use a stateful fake Orca executable and do not require Claude or Codex accounts.
+Tests use a stateful fake Orca executable and do not require any agent accounts.
 
 ## Releasing
 

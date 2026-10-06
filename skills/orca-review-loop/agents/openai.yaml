@@ -1,4 +1,4 @@
 interface:
   display_name: "Orca Review Loop"
-  short_description: "Automate Claude implementation and Codex review/fix rounds"
-  default_prompt: "Use $orca-review-loop to implement this task with Claude and independently review and repair it with Codex until PASS or the configured review limit."
+  short_description: "Automate implement and review/fix rounds between Orca agents"
+  default_prompt: "Use $orca-review-loop to implement this task with the configured implementer agent and independently review and repair it with the configured reviewer until PASS or the configured review limit."

@@ -649,7 +649,7 @@ class Controller {
         role: this.config.implement,
         prompt: this.policy.producerPrompt(this.ctx, round, feedback),
       }, ["DONE", "BLOCKED", "NEEDS_REPLAN"]);
-      this.print(`round ${round} Claude: ${implementation.disposition}`);
+      this.print(`round ${round} ${phase} (${this.config.implement.agent}): ${implementation.disposition}`);
       this.log("implementation_complete", { round, phase, taskId: implementation.worker.taskId,
         dispatchId: implementation.worker.dispatchId, lifecycleOutcome: "succeeded",
         disposition: implementation.disposition, gitDiffSha256: this.snapshot() });
@@ -668,7 +668,7 @@ class Controller {
       if (afterReview !== afterImplementation) {
         throw new LoopError("REVIEWER_MUTATED_WORKTREE", "reviewer changed the working tree", { round });
       }
-      this.print(`round ${round} Codex: ${review.disposition}`);
+      this.print(`round ${round} review (${this.config.review.agent}): ${review.disposition}`);
       const feedbackHash = sha(`${review.message.subject ?? ""}\n${review.message.body ?? ""}`);
       this.log("review_complete", { round, taskId: review.worker.taskId, dispatchId: review.worker.dispatchId,
         lifecycleOutcome: "succeeded", verdict: review.disposition, gitDiffSha256: afterReview,
